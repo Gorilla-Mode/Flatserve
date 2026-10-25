@@ -1,15 +1,15 @@
 @Flatserve_HostAddress = http://localhost:5220
 
 ### Kristiansand centre
-GET {{Flatserve_HostAddress}}/fgb/collection/85000/92000/6463000/6470000
+GET {{Flatserve_HostAddress}}/fgb/collection/7.95/8.08/58.10/58.20
 Accept: application/octet-stream
 
 ### Greater Kristiansand
-GET {{Flatserve_HostAddress}}/fgb/collection/75000/105000/6455000/6480000
+GET {{Flatserve_HostAddress}}/fgb/collection/7.75/8.30/58.0/58.35
 Accept: application/octet-stream
 
 ### Oslo
-GET {{Flatserve_HostAddress}}/fgb/collection/250000/275000/6635000/6660000
+GET {{Flatserve_HostAddress}}/fgb/collection/10.5/10.95/59.8/60.05
 Accept: application/octet-stream
 
 ### Single feature
