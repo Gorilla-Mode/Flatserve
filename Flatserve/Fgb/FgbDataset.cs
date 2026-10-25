@@ -1,15 +1,16 @@
-using System.Security.Cryptography;
+using System.Buffers.Binary;
 using FlatGeobuf;
 using FlatGeobuf.Index;
-using Google.FlatBuffers;
+using NetTopologySuite.Geometries;
 
 namespace Flatserve.Fgb;
 
 public record FgbDataset
 {
-    public readonly byte[] Data;
+    private readonly byte[] _data;
     public readonly List<FgbFeaturePtr> FeaturePtrs = new List<FgbFeaturePtr>();
-    public readonly Index SpatialIndex;
+    private readonly byte[] _spatialIndex = [];
+    private readonly HeaderT _header;
 
     public FgbDataset(string filePath)
     {
@@ -18,38 +19,64 @@ public record FgbDataset
         using var stream = new MemoryStream(raw, false);
         using var reader = new BinaryReader(stream);
         
-        var header = Helpers.ReadHeader(stream).UnPack();
-        SpatialIndex = new Index();
-
-        // Skip index if there is one.
-        if (header.IndexNodeSize > 0 && header.FeaturesCount > 0)
+        _header = Helpers.ReadHeader(stream).UnPack();
+        
+        // fill index
+        if (_header.IndexNodeSize > 0 && _header.FeaturesCount > 0)
         {
-            stream.Position += checked((long)PackedRTree.CalcSize(
-                header.FeaturesCount, header.IndexNodeSize));
+            int indexSize = checked((int)PackedRTree.CalcSize(
+                _header.FeaturesCount, _header.IndexNodeSize));
+
+            _spatialIndex = new byte[indexSize];
+            stream.ReadExactly(_spatialIndex);
         }
 
-        Data = new byte[checked((int)(stream.Length - stream.Position))];
-        stream.ReadExactly(Data);
+        _data = new byte[checked((int)(stream.Length - stream.Position))];
+        stream.ReadExactly(_data);
         
-        using var featureStream = new MemoryStream(Data, false);
+        using var featureStream = new MemoryStream(_data, false);
         using var featureReader = new BinaryReader(featureStream);
         FeaturePtrs = GetFeaturePtrs(featureStream, featureReader);
     }
-    
-    public string FeatureToString(FgbFeaturePtr featurePtr)
+
+    public Byte[] GetBytes(Envelope bbox)
     {
-        Feature feature = ReadFeature(featurePtr);
+        if (_spatialIndex.Length == 0)
+            throw new InvalidOperationException("Spatial index is empty");
         
-        return feature.ToString() ?? "";
+        using var output = new MemoryStream();
+        
+        Stream ReadNode(ulong offset, ulong length)
+        {
+            return new MemoryStream(
+                _spatialIndex,
+                checked((int)offset),
+                checked((int)length),
+                writable: false);
+        }
+        
+        var intersects = PackedRTree.StreamSearch(
+            _header.FeaturesCount,
+            _header.IndexNodeSize,
+            bbox,
+            ReadNode);
+        
+        foreach (var intersect in intersects)
+        {
+            int offset = checked((int)intersect.Offset);
+
+            int length = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(
+                _data.AsSpan(offset, 4)));
+
+            output.Write(_data.AsSpan(offset, checked(4 + length)));
+        }
+                
+        return output.ToArray();
     }
     
-    private Feature ReadFeature(FgbFeaturePtr featurePtr)
+    public Byte[] GetFeatureBytes(FgbFeaturePtr featurePtr)
     {
-        byte[] bytes = Data.AsSpan((int)featurePtr.Offset, (int)featurePtr.Length).ToArray();
-        
-        var buffer = new ByteBuffer(bytes);
-
-        return Feature.GetRootAsFeature(buffer);
+        return _data.AsSpan((int)featurePtr.Offset, (int)featurePtr.Length).ToArray();
     }
 
     private List<FgbFeaturePtr> GetFeaturePtrs(MemoryStream stream, BinaryReader reader)

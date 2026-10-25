@@ -1,5 +1,6 @@
 using Flatserve.Fgb;
 using Microsoft.AspNetCore.Mvc;
+using NetTopologySuite.Geometries;
 
 namespace Flatserve.Controllers;
 
@@ -8,16 +9,18 @@ namespace Flatserve.Controllers;
 public class FlatGeobufController(FgbDataset fgbDataset) : ControllerBase
 {
     [HttpGet]
-    [Route("collection")]
-    public IActionResult Collection()
+    [Route("collection/{minX:double}/{maxX:double}/{minY:double}/{maxY:double}")]
+    public IActionResult Collection(double minX, double maxX, double minY, double maxY)
     {
-        return File(fgbDataset.Data, "application/octet-stream");
+        var bbox = new Envelope(minX, maxX, minY, maxY);
+        
+        return File(fgbDataset.GetBytes(bbox), "application/octet-stream");
     }
 
     [HttpGet]
     [Route("feature/{featureIndex:int}")]
     public IActionResult FeatureString(int featureIndex)
     {
-        return Content(fgbDataset.FeatureToString(fgbDataset.FeaturePtrs[featureIndex]), "text/plain");
+        return File(fgbDataset.GetFeatureBytes(fgbDataset.FeaturePtrs[featureIndex]), "application/octet-stream");
     }
 }
