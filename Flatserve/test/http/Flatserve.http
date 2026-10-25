@@ -1,0 +1,9 @@
+@Flatserve_HostAddress = http://localhost:5220
+
+GET {{Flatserve_HostAddress}}/fgb/collection
+Accept: application/octet-stream
+
+###
+
+GET {{Flatserve_HostAddress}}/fgb/feature/0
+Accept: text/plaing

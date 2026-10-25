@@ -1,0 +1,7 @@
+﻿services:
+  flatserve:
+    image: flatserve
+    build:
+      context: .
+      dockerfile: Flatserve/Dockerfile
+
