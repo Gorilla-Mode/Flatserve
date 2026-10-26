@@ -6,7 +6,6 @@ public sealed class HashIndex : IIndex<string>
 {
     private readonly Dictionary<string, List<FgbFeaturePtr>> _index = new Dictionary<string, List<FgbFeaturePtr>>();
     
-
     public void Add(string value, FgbFeaturePtr featurePtr)
     {
         if (!_index.TryGetValue(value, out var featurePtrs))
