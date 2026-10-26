@@ -2,8 +2,16 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
 async function greenOutline(page: Page) {
+  return outlinePixels(page, [22, 163, 74]);
+}
+
+async function redOutline(page: Page) {
+  return outlinePixels(page, [239, 68, 68]);
+}
+
+async function outlinePixels(page: Page, color: number[]) {
   const screenshot = await page.locator('.maplibregl-canvas').screenshot({ mask: [page.locator('.controls')] });
-  return page.evaluate(async (base64) => {
+  return page.evaluate(async ({ base64, color }) => {
     const image = new Image();
     image.src = `data:image/png;base64,${base64}`;
     await image.decode();
@@ -16,7 +24,7 @@ async function greenOutline(page: Page) {
     let count = 0;
     let minX = canvas.width, maxX = 0, minY = canvas.height, maxY = 0;
     for (let i = 0; i < data.length; i += 4) {
-      if (Math.abs(data[i] - 22) > 5 || Math.abs(data[i + 1] - 163) > 5 || Math.abs(data[i + 2] - 74) > 5) continue;
+      if (color.some((channel, index) => Math.abs(data[i + index] - channel) > 5)) continue;
       const x = (i / 4) % canvas.width;
       const y = Math.floor(i / 4 / canvas.width);
       count++;
@@ -24,7 +32,7 @@ async function greenOutline(page: Page) {
       minY = Math.min(minY, y); maxY = Math.max(maxY, y);
     }
     return { count, minX, maxX, minY, maxY, width: canvas.width, height: canvas.height };
-  }, screenshot.toString('base64'));
+  }, { base64: screenshot.toString('base64'), color });
 }
 
 async function expectInsetOutline(page: Page) {
@@ -43,6 +51,160 @@ test.beforeEach(async ({ page }) => {
     json: { version: 8, sources: {}, layers: [{ id: 'background', type: 'background',
       paint: { 'background-color': '#0c0c0c' } }] },
   }));
+});
+
+test('Show buffer draws fetched coverage, stays fixed during reuse and pending work, and only changes visualization', async ({ page }) => {
+  const requests: URL[] = [];
+  const failed: string[] = [];
+  page.on('request', (request) => {
+    if (request.url().includes('/fgb/collection?')) requests.push(new URL(request.url()));
+  });
+  page.on('requestfailed', (request) => { if (request.url().includes('/fgb/')) failed.push(request.url()); });
+  await page.goto('./');
+  const show = page.getByRole('button', { name: 'Show buffer', exact: true });
+  await expect(show).toBeDisabled();
+  await expect(show).toHaveAttribute('aria-pressed', 'false');
+  await expect(show).toHaveAttribute('title', /red.*fetched.*coverage/);
+  await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('639 features in view');
+  await expect(show).toBeDisabled();
+  const bbox = page.getByRole('button', { name: 'BBox', exact: true });
+  // Establish viewport coverage after discovery has finished fitting the camera.
+  await bbox.click();
+  await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
+  await bbox.click();
+  await expect(page.getByRole('status')).toHaveText('639 features in view');
+  const viewport = requests.at(-1)!;
+  await bbox.click();
+  await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
+  await expect(show).toBeEnabled();
+  expect((await redOutline(page)).count).toBe(0);
+  const fetched = requests.at(-1)!;
+  const status = await page.getByRole('status').innerText();
+  const before = requests.length;
+  const green = await greenOutline(page);
+  await show.click();
+  const red = await redOutline(page);
+  expect(red.count).toBeGreaterThan(100);
+  // Recover the viewport from its buffered request and project the fetched edges.
+  const coordinate = (url: URL, key: string) => Number(url.searchParams.get(key));
+  const edge = (key: string) => {
+    const axis = key.endsWith('X') ? 'X' : 'Y';
+    const min = coordinate(viewport, `min${axis}`), max = coordinate(viewport, `max${axis}`);
+    return key.startsWith('min') ? min + (max - min) / 6 : max - (max - min) / 6;
+  };
+  const mercator = (lat: number) => Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360));
+  const x = (lng: number) => red.width * (lng - edge('minX')) / (edge('maxX') - edge('minX'));
+  const y = (lat: number) => red.height * (mercator(edge('maxY')) - mercator(lat))
+    / (mercator(edge('maxY')) - mercator(edge('minY')));
+  expect(Math.abs(red.minX - x(coordinate(fetched, 'minX')))).toBeLessThan(3);
+  expect(Math.abs(red.maxX - x(coordinate(fetched, 'maxX')))).toBeLessThan(3);
+  expect(Math.abs(red.minY - y(coordinate(fetched, 'maxY')))).toBeLessThan(3);
+  expect(Math.abs(red.maxY - y(coordinate(fetched, 'minY')))).toBeLessThan(3);
+  await show.click();
+  expect((await redOutline(page)).count).toBe(0);
+  await show.click();
+  expect(await redOutline(page)).toEqual(red);
+  expect(await greenOutline(page)).toEqual(green);
+  await expect(page.getByRole('status')).toHaveText(status);
+  expect(requests).toHaveLength(before);
+
+  await page.mouse.move(700, 450);
+  await page.mouse.down();
+  await page.mouse.move(740, 450, { steps: 10 });
+  const reused = await redOutline(page);
+  expect(Math.abs(reused.minX - red.minX - 40)).toBeLessThan(3);
+  expect(Math.abs(reused.maxX - red.maxX - 40)).toBeLessThan(3);
+  expect(requests).toHaveLength(before);
+
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let delayNext = true;
+  await page.route('http://localhost:5221/fgb/collection?**', async (route) => {
+    if (!delayNext) return route.continue();
+    delayNext = false;
+    const response = await route.fetch();
+    await held;
+    await route.fulfill({ response });
+  });
+  await page.mouse.move(940, 450, { steps: 20 });
+  await expect.poll(() => requests.length).toBe(before + 1);
+  await expect(page.getByRole('status')).toContainText('Loading');
+  const pending = await redOutline(page);
+  expect(Math.abs(pending.minX - red.minX - 240)).toBeLessThan(3);
+  const pendingStatus = await page.getByRole('status').innerText();
+  // Toggle with keyboard so the map drag can stay held without inertia.
+  await show.focus();
+  await page.keyboard.press('Space');
+  expect((await redOutline(page)).count).toBe(0);
+  await page.keyboard.press('Space');
+  expect(await redOutline(page)).toEqual(pending);
+  await expect(page.getByRole('status')).toHaveText(pendingStatus);
+  expect(requests).toHaveLength(before + 1);
+  expect(failed).toEqual([]);
+  release();
+  await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
+  await expect.poll(async () => (await redOutline(page)).minX).toBeLessThan(pending.minX - 50);
+  await page.mouse.up();
+  expect(failed).toEqual([]);
+});
+
+test('preserves Show buffer through prerequisites and reconnections, hiding coverage until available, and resets on reload', async ({ page }) => {
+  let releaseStyle!: () => void;
+  const heldStyle = new Promise<void>((resolve) => { releaseStyle = resolve; });
+  await page.route('https://tiles.openfreemap.org/**', async (route) => {
+    await heldStyle;
+    await route.fulfill({ json: { version: 8, sources: {}, layers: [] } });
+  });
+  await page.goto('./');
+  const show = page.getByRole('button', { name: 'Show buffer', exact: true });
+  await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(show).toBeDisabled();
+  releaseStyle();
+  await expect(page.getByRole('status')).toHaveText('639 features in view');
+  await page.getByRole('button', { name: 'BBox', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
+  await show.click();
+  await expect.poll(async () => (await redOutline(page)).count).toBeGreaterThan(100);
+  for (const name of ['Buffer', 'BBox']) {
+    const mode = page.getByRole('button', { name, exact: true });
+    await mode.click();
+    await expect(show).toBeDisabled();
+    await expect(show).toHaveAttribute('aria-pressed', 'true');
+    expect((await redOutline(page)).count).toBe(0);
+    await mode.click();
+    await expect(show).toBeEnabled();
+    await expect.poll(async () => (await redOutline(page)).count).toBeGreaterThan(100);
+  }
+  await page.getByRole('button', { name: 'Filter', exact: true }).click();
+  const select = page.getByLabel('Brannvesen', { exact: true });
+  await select.selectOption({ label: 'Oslo brann- og redningsetat' });
+  await expect(page.getByRole('status')).toHaveText('7 features matching filter');
+  await expect(show).toBeDisabled();
+  await expect(show).toHaveAttribute('aria-pressed', 'true');
+  expect((await redOutline(page)).count).toBe(0);
+  await select.selectOption('');
+  await expect(show).toBeEnabled();
+  await expect.poll(async () => (await redOutline(page)).count).toBeGreaterThan(100);
+  let releaseRequest!: () => void;
+  const heldRequest = new Promise<void>((resolve) => { releaseRequest = resolve; });
+  await page.route('http://localhost:5221/fgb/collection?**', async (route) => {
+    const response = await route.fetch();
+    await heldRequest;
+    await route.fulfill({ response });
+  });
+  await page.getByRole('button', { name: 'Connection', exact: true }).click();
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('Loading');
+  await expect(show).toHaveAttribute('aria-pressed', 'true');
+  expect((await redOutline(page)).count).toBe(0);
+  releaseRequest();
+  await expect.poll(async () => (await redOutline(page)).count).toBeGreaterThan(100);
+  await page.reload();
+  await expect(show).toBeDisabled();
+  await expect(show).toHaveAttribute('aria-pressed', 'false');
 });
 
 test('connects, loads stations, caches filters through camera moves, and prompts again on reload', async ({ page }) => {

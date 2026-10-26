@@ -5,7 +5,8 @@ import type { GeoJSONSource } from 'maplibre-gl';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import type { Feature, FeatureCollection } from 'geojson';
 import { errorMessage, normalizeApiUrl } from './api';
-import { insetBounds, viewportBounds } from './bounds';
+import { coverageOutline, insetBounds, viewportBounds } from './bounds';
+import type { Bounds } from './bounds';
 import { DatasetSession } from './session';
 
 setWorkerUrl(workerUrl);
@@ -24,7 +25,10 @@ export function App() {
   const [selection, setSelection] = useState('');
   const [bboxEnabled, setBboxEnabled] = useState(false);
   const [bufferEnabled, setBufferEnabled] = useState(true);
+  const [showBuffer, setShowBuffer] = useState(false);
+  const [coverage, setCoverage] = useState<Bounds[] | undefined>();
   const bboxActive = bboxEnabled && selection === '';
+  const canShowBuffer = !!connection && mapReady && bboxActive && bufferEnabled;
   const [values, setValues] = useState<string[]>([]);
   const [count, setCount] = useState(0);
   const [status, setStatus] = useState({ loading: false, error: null as string | null });
@@ -53,6 +57,11 @@ export function App() {
       instance.addLayer({
         id: 'query-bbox', type: 'line', source: 'query-bbox',
         paint: { 'line-color': '#16a34a', 'line-width': 3 },
+      });
+      instance.addSource('fetched-buffer', { type: 'geojson', data: collection([]) });
+      instance.addLayer({
+        id: 'fetched-buffer', type: 'line', source: 'fetched-buffer',
+        paint: { 'line-color': '#ef4444', 'line-width': 3 },
       });
       instance.addSource('stations', { type: 'geojson', data: collection(featuresRef.current) });
       instance.addLayer({
@@ -89,6 +98,7 @@ export function App() {
       onStatus: setStatus,
       onDiscovery: setDiscovery,
       onValues: setValues,
+      onCoverage: setCoverage,
       onHeader: (header) => {
         const extent = header.envelope;
         if (fitted || !map.current || !extent || extent.length !== 4 || !Array.from(extent).every(Number.isFinite)) return;
@@ -105,6 +115,13 @@ export function App() {
       session.current = null;
     };
   }, [connection]);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    const outline = showBuffer && canShowBuffer && coverage ? coverageOutline(coverage) : undefined;
+    (map.current?.getSource('fetched-buffer') as GeoJSONSource | undefined)
+      ?.setData(collection(outline ? [outline] : []));
+  }, [mapReady, showBuffer, canShowBuffer, coverage]);
 
   useEffect(() => {
     if (!connection || !mapReady || !map.current) return;
@@ -164,6 +181,9 @@ export function App() {
               title="Fetch an extra 25% on each side of the viewport or BBox to reduce requests while moving."
               onClick={() => setBufferEnabled(!bufferEnabled)}>Buffer</button>
           </div>
+          <button disabled={!canShowBuffer} aria-pressed={showBuffer}
+            title="Show a red outline around the last successfully fetched buffer coverage."
+            onClick={() => setShowBuffer(!showBuffer)}>Show buffer</button>
         </div>
         {connection && <small className="api-url" title={connection.url}>{connection.url}</small>}
         {filterOpen && <div id="filter-panel" className="filter-panel">

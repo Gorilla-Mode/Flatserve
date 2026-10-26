@@ -7,9 +7,103 @@ import { station } from '../tests/fixtures';
 
 const observers = () => ({
   onFeatures: vi.fn(), onStatus: vi.fn(), onHeader: vi.fn(), onValues: vi.fn(), onDiscovery: vi.fn(),
+  onCoverage: vi.fn(),
 });
 
 const area = (west = 0, east = 10) => viewportBounds(west, 50, east, 60);
+
+describe('coverage notifications', () => {
+  it('reports empty spatial success, reuses it silently, and keeps it during movement and failures', async () => {
+    const observer = observers();
+    const { read, calls } = pendingReader();
+    const session = new DatasetSession('https://example.org', observer, read);
+    const initial = session.setBounds(area());
+    expect(observer.onCoverage).not.toHaveBeenCalled();
+    calls[0].resolve([]);
+    await initial;
+    expect(observer.onCoverage.mock.calls).toEqual([[expandBounds(area())]]);
+    await session.setBounds(area(1, 11));
+    expect(calls).toHaveLength(1);
+    const next = session.setBounds(area(3, 13));
+    expect(observer.onCoverage).toHaveBeenCalledTimes(1);
+    calls[1].reject(new Error('Offline'));
+    await next;
+    expect(observer.onCoverage).toHaveBeenCalledTimes(1);
+    const replacement = session.setBounds(area(4, 14));
+    calls[2].resolve([]);
+    await replacement;
+    expect(observer.onCoverage.mock.calls).toEqual([[expandBounds(area())], [expandBounds(area(4, 14))]]);
+  });
+
+  it('clears coverage on refresh, query configuration changes, filters, and disposal', async () => {
+    const observer = observers();
+    const read = vi.fn().mockResolvedValue([]);
+    const session = new DatasetSession('https://example.org', observer, read);
+    await session.setBounds(area());
+    observer.onCoverage.mockClear();
+    await session.refresh();
+    await session.setFilter('', area(4, 6));
+    await session.setFilter('', area(4, 6), false);
+    await session.setFilter('Oslo');
+    await session.setFilter('Oslo'); // Cached filters still have no spatial coverage.
+    await session.setFilter('');
+    session.dispose();
+    expect(observer.onCoverage.mock.calls).toEqual([
+      [undefined], [expandBounds(area())],
+      [undefined], [expandBounds(area(4, 6))],
+      [undefined], [area(4, 6)],
+      [undefined], [undefined],
+      [undefined], [area(4, 6)], [undefined],
+    ]);
+  });
+
+  it('publishes multipart coverage only on complete success, retaining previous coverage on partial failure', async () => {
+    const observer = observers();
+    const { read, calls } = pendingReader();
+    const session = new DatasetSession('https://example.org', observer, read);
+    const initial = session.setBounds(area());
+    calls[0].resolve([]);
+    await initial;
+    const crossing = viewportBounds(170, 50, 190, 60);
+    const failed = session.setBounds(crossing);
+    calls[1].resolve([]);
+    await vi.waitFor(() => expect(calls).toHaveLength(3));
+    expect(observer.onCoverage.mock.calls).toEqual([[expandBounds(area())]]);
+    calls[2].reject(new Error('Second half failed'));
+    await failed;
+    expect(observer.onCoverage).toHaveBeenCalledTimes(1);
+    const retry = session.refresh();
+    expect(observer.onCoverage.mock.lastCall).toEqual([undefined]);
+    calls[3].resolve([]);
+    await vi.waitFor(() => expect(calls).toHaveLength(5));
+    expect(observer.onCoverage).toHaveBeenCalledTimes(2);
+    calls[4].resolve([]);
+    await retry;
+    expect(observer.onCoverage.mock.lastCall).toEqual([expandBounds(crossing)]);
+  });
+
+  it('ignores aborted and stale responses, including after disposal', async () => {
+    const observer = observers();
+    const { read, calls } = pendingReader();
+    const session = new DatasetSession('https://example.org', observer, read);
+    const stale = session.setBounds(area());
+    const latest = session.setFilter('', area(20, 30));
+    observer.onCoverage.mockClear();
+    calls[0].resolve([]);
+    await stale;
+    expect(observer.onCoverage).not.toHaveBeenCalled();
+    expect(calls[0].options.signal.aborted).toBe(true);
+    calls[1].resolve([]);
+    await latest;
+    expect(observer.onCoverage.mock.calls).toEqual([[expandBounds(area(20, 30))]]);
+    const disposed = session.setBounds(area(40, 50));
+    session.dispose();
+    observer.onCoverage.mockClear();
+    calls[2].resolve([]);
+    await disposed;
+    expect(observer.onCoverage).not.toHaveBeenCalled();
+  });
+});
 
 describe('buffered live updates', () => {
   it('requests exact bounds with Buffer off and reuses containing coverage with live filtering', async () => {
@@ -59,13 +153,16 @@ describe('buffered live updates', () => {
     expect(calls[1].options.signal.aborted).toBe(true);
     expect(calls[2].options.signal.aborted).toBe(true);
     expect(observer.onFeatures).toHaveBeenCalledTimes(1);
+    observer.onCoverage.mockClear();
     calls[1].resolve([station('stale', 9)]);
     calls[2].reject(new Error('Stale failure'));
     await Promise.all([staleSuccess, staleFailure]);
+    expect(observer.onCoverage).not.toHaveBeenCalled();
     expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('saved', 8)]);
     expect(observer.onStatus.mock.lastCall?.[0]).toEqual({ loading: true, error: null });
     calls[3].resolve([station('current', 9)]);
     await latest;
+    expect(observer.onCoverage.mock.calls).toEqual([[!enabled ? expandBounds(area()) : area()]]);
     expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('current', 9)]);
   });
 

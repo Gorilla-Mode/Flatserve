@@ -10,6 +10,7 @@ interface Observer {
   onHeader: (header: HeaderMeta) => void;
   onValues: (values: string[]) => void;
   onDiscovery: (status: { loading: boolean; error: string | null }) => void;
+  onCoverage?: (bounds: Bounds[] | undefined) => void;
 }
 
 export function distinctBrannvesen(features: Feature[]): string[] {
@@ -83,6 +84,7 @@ export class DatasetSession {
   refresh(): Promise<void> {
     this.cancelView();
     this.coverage = undefined;
+    this.observer.onCoverage?.(undefined);
     this.failedTarget = undefined;
     if (this.disposed) return Promise.resolve();
     if (!this.selection) this.publish();
@@ -139,7 +141,10 @@ export class DatasetSession {
         features.push(...part);
       }
       if (selection) this.cache.set(selection, features);
-      else this.coverage = requestBounds;
+      else {
+        this.coverage = requestBounds;
+        this.observer.onCoverage?.(requestBounds);
+      }
       this.features = features;
       this.failedTarget = undefined;
       this.publish();
@@ -160,6 +165,8 @@ export class DatasetSession {
   dispose(): void {
     this.disposed = true;
     this.cancelView();
+    this.coverage = undefined;
+    this.observer.onCoverage?.(undefined);
     this.discoveryRequest?.abort();
     this.cache.clear();
   }

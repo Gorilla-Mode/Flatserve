@@ -1,4 +1,4 @@
-import type { Feature, LineString } from 'geojson';
+import type { Feature, LineString, MultiLineString } from 'geojson';
 
 export interface Bounds {
   minX: number;
@@ -19,6 +19,19 @@ function continuousBounds(bounds: Bounds[]): Bounds | undefined {
     minY: parts[0].minY,
     maxY: parts[0].maxY,
   };
+}
+
+/** Rejoin fetched parts into one geographic outline, without a date-line seam. */
+export function coverageOutline(bounds: Bounds[]): Feature<MultiLineString> | undefined {
+  const area = continuousBounds(bounds);
+  if (!area) return;
+  const { minX: west, minY: south, maxX: east, maxY: north } = area;
+  // World-wide coverage has no east/west edge. Subdivide the parallels so that
+  // GeoJSON wrapping never mistakes a full-world segment for a zero-width one.
+  const coordinates = east - west >= 360
+    ? [south, north].map((y) => [[west, y], [west + 180, y], [east, y]])
+    : [[[west, south], [east, south], [east, north], [west, north], [west, south]]];
+  return { type: 'Feature', properties: {}, geometry: { type: 'MultiLineString', coordinates } };
 }
 
 /** Add 25% of the active width/height on each side, then normalize/split. */

@@ -33,26 +33,48 @@ test('OpenFreeMap Dark renders roads, labels, attribution, and overlays at city 
   expect(loaded.some((url) => url.includes('/fonts/'))).toBe(true);
   expect(loaded.some((url) => /\/\d+\/\d+\/\d+\.pbf/.test(url))).toBe(true);
   await expect(page.getByRole('alert')).toHaveCount(0);
+  await page.getByRole('button', { name: 'BBox', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
+  await page.getByRole('button', { name: 'Show buffer', exact: true }).click();
+  await page.waitForTimeout(250);
   await page.screenshot({ path: 'test-results/dark-city.png' });
+  const refreshCoverage = async () => {
+    // Cached city coverage can lie outside a zoomed street view. Establish a
+    // fresh buffer at each inspection camera so both outlines are on screen.
+    const bbox = page.getByRole('button', { name: 'BBox', exact: true });
+    await bbox.click();
+    await expect(page.getByRole('status')).toHaveText(/^(\d+ features in view|No features found\.)$/);
+    await bbox.click();
+    await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
+    await page.waitForTimeout(250);
+  };
   for (let i = 0; i < 3; i++) {
     await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
     await page.waitForTimeout(350);
   }
   await page.waitForLoadState('networkidle');
-  await page.getByRole('button', { name: 'BBox', exact: true }).click();
-  await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
-  await page.waitForTimeout(250);
+  await refreshCoverage();
   await page.screenshot({ path: 'test-results/dark-street.png' });
   await page.mouse.move(700, 450);
   await page.mouse.down({ button: 'right' });
   await page.mouse.move(850, 330, { steps: 20 });
   await page.mouse.up({ button: 'right' });
   await page.waitForLoadState('networkidle');
+  await refreshCoverage();
   await page.screenshot({ path: 'test-results/dark-tilted.png' });
   for (const width of [375, 280]) {
     await page.setViewportSize({ width, height: 700 });
     await page.waitForLoadState('networkidle');
+    await refreshCoverage();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const show = page.getByRole('button', { name: 'Show buffer', exact: true });
+    await expect(show).toBeEnabled();
+    await expect(show).toHaveAttribute('aria-pressed', 'true');
+    const toolbar = await page.locator('.toolbar').boundingBox();
+    const settings = await page.locator('.toolbar-settings').boundingBox();
+    const button = await show.boundingBox();
+    expect(button!.y).toBeGreaterThanOrEqual(settings!.y + settings!.height);
+    expect(button!.width).toBeCloseTo(toolbar!.width, 0);
     const attribution = page.locator('.maplibregl-ctrl-attrib');
     if ((await attribution.getAttribute('open')) === null) await attribution.locator('summary').click();
     const link = attribution.locator('a[href*="openstreetmap.org"]');

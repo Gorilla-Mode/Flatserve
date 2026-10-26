@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { containsBounds, containsPoint, expandBounds, insetBounds, viewportBounds, WORLD } from './bounds';
+import { containsBounds, containsPoint, coverageOutline, expandBounds, insetBounds, viewportBounds, WORLD } from './bounds';
 
 function projection(longitude = 10, bearing = 0, pitch = 0) {
   const cos = Math.cos(bearing);
@@ -21,6 +21,35 @@ function projection(longitude = 10, bearing = 0, pitch = 0) {
     },
   };
 }
+
+describe('fetched coverage outline', () => {
+  it('draws exactly the reported coverage without expanding it again', () => {
+    const fetched = expandBounds(viewportBounds(4, 58, 12, 62));
+    expect(coverageOutline(fetched)?.geometry.coordinates).toEqual([
+      [[2, 57], [14, 57], [14, 63], [2, 63], [2, 57]],
+    ]);
+    expect(coverageOutline([])).toBeUndefined();
+  });
+
+  it.each([170, -190, 530])('rejoins coverage across the date line in world %s without false edges', (west) => {
+    const fetched = expandBounds(viewportBounds(west, -20, west + 20, 20));
+    const outline = coverageOutline(fetched)!;
+    expect(outline.geometry.coordinates).toEqual([
+      [[165, -30], [195, -30], [195, 30], [165, 30], [165, -30]],
+    ]);
+    const [sw, , ne] = outline.geometry.coordinates[0];
+    expect(viewportBounds(sw[0], sw[1], ne[0], ne[1])).toEqual(fetched);
+  });
+
+  it('normalizes repeated worlds and omits artificial vertical edges for full-world coverage', () => {
+    expect(coverageOutline([{ minX: 364, minY: 58, maxX: 392, maxY: 72 }]))
+      .toEqual(coverageOutline(viewportBounds(4, 58, 32, 72)));
+    expect(coverageOutline(viewportBounds(-400, -60, 400, 60))?.geometry.coordinates).toEqual([
+      [[-180, -60], [0, -60], [180, -60]],
+      [[-180, 60], [0, 60], [180, 60]],
+    ]);
+  });
+});
 
 describe('inset query rectangle', () => {
   it('leaves a 20% margin and uses the exact outline coordinates for requests', () => {
