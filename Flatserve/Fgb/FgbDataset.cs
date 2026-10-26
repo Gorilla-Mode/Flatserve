@@ -1,7 +1,9 @@
 using System.Buffers.Binary;
 using FlatGeobuf;
 using FlatGeobuf.Index;
+using FlatGeobuf.NTS;
 using Flatserve.Index;
+using Google.FlatBuffers;
 using NetTopologySuite.Geometries;
 
 namespace Flatserve.Fgb;
@@ -39,6 +41,7 @@ public record FgbDataset
         using var featureStream = new MemoryStream(_data, false);
         using var featureReader = new BinaryReader(featureStream);
         FeaturePtrs = GetFeaturePtrs(featureStream, featureReader);
+        BuildTextIndex("brannvesen"); //TODO: make dynamic based on user input or configuration
     }
 
     public Byte[] GetBytes(Envelope bbox)
@@ -91,10 +94,9 @@ public record FgbDataset
         foreach (var feature in features)
         {
             int offset = checked((int)feature.Offset);
-            int length = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(
-                _data.AsSpan(offset, 4)));
+            int length = checked((int)feature.Length);
 
-            output.Write(_data.AsSpan(offset, checked(4 + length)));
+            output.Write(_data.AsSpan(offset - 4, checked(length + 4)));
         }
 
         return output.ToArray();
@@ -128,6 +130,29 @@ public record FgbDataset
         }
 
         index.Add(value, featurePtr);
+    }
+
+    private void BuildTextIndex(string attribute)
+    {
+        var sequenceFactory = new FlatGeobufCoordinateSequenceFactory();
+        var factory = new GeometryFactory(sequenceFactory);
+        
+        foreach (var pointer in FeaturePtrs)
+        {
+            var feature = FeatureConversions.FromByteBuffer(factory,
+                sequenceFactory,
+                new ByteBuffer(GetFeatureBytes(pointer)),
+                _header);
+
+            var attributes = feature.Attributes;
+            
+            if (attributes is not null &&
+                attributes.Exists(attribute) &&
+                attributes[attribute] is string value)
+            {
+                AddToTextIndex(attribute, value, pointer);
+            }
+        }
     }
     
 }

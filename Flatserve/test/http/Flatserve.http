@@ -1,5 +1,9 @@
 @Flatserve_HostAddress = http://localhost:5220
 
+### All features
+GET {{Flatserve_HostAddress}}/fgb/collection?minX=4&minY=58&maxX=32&maxY=72
+Accept: application/octet-stream
+
 ### Kristiansand centre
 GET {{Flatserve_HostAddress}}/fgb/collection?minX=7.95&minY=58.10&maxX=8.08&maxY=58.20
 Accept: application/octet-stream
@@ -14,4 +18,12 @@ Accept: application/octet-stream
 
 ### Single feature
 GET {{Flatserve_HostAddress}}/fgb/feature/0
+Accept: application/octet-stream
+
+### Filter by Brannvesen oslo
+GET {{Flatserve_HostAddress}}/fgb/filter?value=Oslo%20brann-%20og%20redningsetat&attribute=brannvesen
+Accept: application/octet-stream
+
+### Filter by Brannvesen kristiansand
+GET {{Flatserve_HostAddress}}/fgb/filter?value=Kristiansandsregionen%20BR&attribute=brannvesen
 Accept: application/octet-stream

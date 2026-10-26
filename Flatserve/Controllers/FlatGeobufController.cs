@@ -38,4 +38,13 @@ public class FlatGeobufController(FgbDataset fgbDataset) : ControllerBase
     {
         return File(fgbDataset.GetFeatureBytes(fgbDataset.FeaturePtrs[featureIndex]), "application/octet-stream");
     }
+
+    [HttpGet]
+    [Route("filter")]
+    public IActionResult FilterTextAttribure(
+        [FromQuery, BindRequired]string attribute,
+        [FromQuery, BindRequired]string value)
+    {
+        return File(fgbDataset.FilterTextAttribute(attribute, value), "application/octet-stream");
+    }
 }
