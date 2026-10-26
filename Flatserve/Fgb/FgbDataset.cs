@@ -66,7 +66,6 @@ public record FgbDataset
         foreach (var intersect in intersects)
         {
             int offset = checked((int)intersect.Offset);
-
             int length = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(
                 _data.AsSpan(offset, 4)));
 
@@ -79,6 +78,26 @@ public record FgbDataset
     public Byte[] GetFeatureBytes(FgbFeaturePtr featurePtr)
     {
         return _data.AsSpan((int)featurePtr.Offset, (int)featurePtr.Length).ToArray();
+    }
+
+    public Byte[] FilterTextAttribute(string attribute, string value)
+    {
+        var features = _textIndexes.TryGetValue(attribute, out var index)
+            ? index.Get(value)
+            : Array.Empty<FgbFeaturePtr>();
+        
+        using var output = new MemoryStream();
+
+        foreach (var feature in features)
+        {
+            int offset = checked((int)feature.Offset);
+            int length = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(
+                _data.AsSpan(offset, 4)));
+
+            output.Write(_data.AsSpan(offset, checked(4 + length)));
+        }
+
+        return output.ToArray();
     }
 
     private List<FgbFeaturePtr> GetFeaturePtrs(MemoryStream stream, BinaryReader reader)
@@ -99,4 +118,16 @@ public record FgbDataset
         
         return fgbFeaturePtrs;
     }
+
+    private void AddToTextIndex(string attribute, string value, FgbFeaturePtr featurePtr)
+    {
+        if (!_textIndexes.TryGetValue(attribute, out var index))
+        {
+            index = new HashIndex();
+            _textIndexes.Add(attribute, index);
+        }
+
+        index.Add(value, featurePtr);
+    }
+    
 }
