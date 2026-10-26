@@ -29,14 +29,17 @@ public class FlatGeobufController(FgbDataset fgbDataset) : ControllerBase
         }
 
         var bbox = new Envelope(minX, maxX, minY, maxY);
-        return File(fgbDataset.GetBytes(bbox), "application/octet-stream");
+        return File(fgbDataset.GetBytes(bbox), "application/vnd.fgb");
     }
 
     [HttpGet]
     [Route("feature/{featureIndex:int}")]
     public IActionResult FeatureString(int featureIndex)
     {
-        return File(fgbDataset.GetFeatureBytes(fgbDataset.FeaturePtrs[featureIndex]), "application/octet-stream");
+        if (featureIndex < 0 || featureIndex >= fgbDataset.FeaturePtrs.Count)
+            return BadRequest("Feature index is out of bounds.");
+
+        return File(fgbDataset.GetFeatureBytes(fgbDataset.FeaturePtrs[featureIndex]), "application/vnd.fgb");
     }
 
     [HttpGet]
@@ -45,6 +48,6 @@ public class FlatGeobufController(FgbDataset fgbDataset) : ControllerBase
         [FromQuery, BindRequired]string attribute,
         [FromQuery, BindRequired]string value)
     {
-        return File(fgbDataset.FilterTextAttribute(attribute, value), "application/octet-stream");
+        return File(fgbDataset.FilterTextAttribute(attribute, value), "application/vnd.fgb");
     }
 }

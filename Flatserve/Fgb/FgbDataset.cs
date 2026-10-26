@@ -14,6 +14,7 @@ public record FgbDataset
     public readonly List<FgbFeaturePtr> FeaturePtrs = new List<FgbFeaturePtr>();
     private readonly byte[] _spatialIndex = [];
     private readonly HeaderT _header;
+    private byte[] _exportHeader;
     private readonly Dictionary<string, HashIndex> _textIndexes = new Dictionary<string, HashIndex>();
 
     public FgbDataset(string filePath)
@@ -23,8 +24,11 @@ public record FgbDataset
         using var stream = new MemoryStream(raw, false);
         using var reader = new BinaryReader(stream);
         
-        _header = Helpers.ReadHeader(stream).UnPack();
+        var originalHeader = Helpers.ReadHeader(stream);
+        _header = originalHeader.UnPack();
         
+        CreateExportHeader(originalHeader);
+
         // fill index
         if (_header.IndexNodeSize > 0 && _header.FeaturesCount > 0)
         {
@@ -44,12 +48,31 @@ public record FgbDataset
         BuildTextIndex("brannvesen"); //TODO: make dynamic based on user input or configuration
     }
 
+    private void CreateExportHeader(Header originalHeader)
+    {
+        var exportHeader = originalHeader.UnPack();
+        
+        exportHeader.IndexNodeSize = 0;
+        exportHeader.FeaturesCount = 0; // Unknown count; readers continue until EOF.
+        
+        var builder = new FlatBufferBuilder(1024);
+        var headerOffset = Header.Pack(builder, exportHeader);
+        
+        builder.FinishSizePrefixed(headerOffset.Value);
+        var headerBytes = builder.SizedByteArray();
+        _exportHeader = new byte[Constants.MagicBytes.Length + headerBytes.Length];
+        
+        Constants.MagicBytes.CopyTo(_exportHeader, 0);
+        headerBytes.CopyTo(_exportHeader, Constants.MagicBytes.Length);
+    }
+
     public Byte[] GetBytes(Envelope bbox)
     {
         if (_spatialIndex.Length == 0)
             throw new InvalidOperationException("Spatial index is empty");
         
         using var output = new MemoryStream();
+        output.Write(_exportHeader);
         
         Stream ReadNode(ulong offset, ulong length)
         {
@@ -80,8 +103,17 @@ public record FgbDataset
     
     public Byte[] GetFeatureBytes(FgbFeaturePtr featurePtr)
     {
-        return _data.AsSpan((int)featurePtr.Offset, (int)featurePtr.Length).ToArray();
+        using var output = new MemoryStream();
+        output.Write(_exportHeader);
+        WriteFeature(output, featurePtr);
+        return output.ToArray();
     }
+
+    private byte[] GetRawFeatureBytes(FgbFeaturePtr featurePtr) =>
+        _data.AsSpan(checked((int)featurePtr.Offset), checked((int)featurePtr.Length)).ToArray();
+
+    private void WriteFeature(Stream output, FgbFeaturePtr featurePtr) =>
+        output.Write(_data.AsSpan(checked((int)featurePtr.Offset - 4), checked((int)featurePtr.Length + 4)));
 
     public Byte[] FilterTextAttribute(string attribute, string value)
     {
@@ -90,13 +122,11 @@ public record FgbDataset
             : Array.Empty<FgbFeaturePtr>();
         
         using var output = new MemoryStream();
+        output.Write(_exportHeader);
 
         foreach (var feature in features)
         {
-            int offset = checked((int)feature.Offset);
-            int length = checked((int)feature.Length);
-
-            output.Write(_data.AsSpan(offset - 4, checked(length + 4)));
+            WriteFeature(output, feature);
         }
 
         return output.ToArray();
@@ -141,7 +171,7 @@ public record FgbDataset
         {
             var feature = FeatureConversions.FromByteBuffer(factory,
                 sequenceFactory,
-                new ByteBuffer(GetFeatureBytes(pointer)),
+                new ByteBuffer(GetRawFeatureBytes(pointer)),
                 _header);
 
             var attributes = feature.Attributes;
