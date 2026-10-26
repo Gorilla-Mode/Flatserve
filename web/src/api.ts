@@ -41,6 +41,14 @@ export interface DecodeOptions {
   onBatch?: (features: Feature[]) => void;
   onHeader?: (header: HeaderMeta) => void;
   batchSize?: number;
+  onTiming?: (timing: RequestTiming) => void;
+}
+
+export interface RequestTiming {
+  url: string;
+  requestMs: number;
+  parseMs: number;
+  totalMs: number;
 }
 
 /** Decode the response as it arrives, including headers/features split across chunks. */
@@ -96,12 +104,24 @@ export async function decodeResponse(response: Response, options: DecodeOptions)
 }
 
 export async function fetchFeatures(url: URL, options: DecodeOptions): Promise<Feature[]> {
+  options.signal.throwIfAborted();
+  const started = performance.now();
   const response = await fetch(url, {
     signal: options.signal,
     credentials: 'omit',
     headers: { Accept: 'application/octet-stream' },
   });
-  return decodeResponse(response, options);
+  const headersReceived = performance.now();
+  const features = await decodeResponse(response, options);
+  const finished = performance.now();
+  options.signal.throwIfAborted();
+  options.onTiming?.({
+    url: url.href,
+    requestMs: headersReceived - started,
+    parseMs: finished - headersReceived,
+    totalMs: finished - started,
+  });
+  return features;
 }
 
 export function errorMessage(error: unknown): string {

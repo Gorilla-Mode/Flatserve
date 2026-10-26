@@ -1,6 +1,6 @@
 import type { Feature } from 'geojson';
 import { collectionUrl, errorMessage, fetchFeatures, filterUrl } from './api';
-import type { HeaderMeta } from './api';
+import type { HeaderMeta, RequestTiming } from './api';
 import { containsBounds, containsPoint, expandBounds, WORLD } from './bounds';
 import type { Bounds } from './bounds';
 
@@ -11,6 +11,7 @@ interface Observer {
   onValues: (values: string[]) => void;
   onDiscovery: (status: { loading: boolean; error: string | null }) => void;
   onCoverage?: (bounds: Bounds[] | undefined) => void;
+  onTiming?: (timing: RequestTiming) => void;
 }
 
 export function distinctBrannvesen(features: Feature[]): string[] {
@@ -42,6 +43,7 @@ export class DatasetSession {
   ) {}
 
   async discover(): Promise<void> {
+    if (this.disposed) return;
     this.discoveryRequest?.abort();
     const request = new AbortController();
     this.discoveryRequest = request;
@@ -51,6 +53,7 @@ export class DatasetSession {
       const features = await this.read(collectionUrl(this.base, WORLD), {
         signal: request.signal,
         onHeader: (header) => { if (current()) this.observer.onHeader(header); },
+        onTiming: (timing) => { if (current()) this.observer.onTiming?.(timing); },
       });
       if (!current()) return;
       this.observer.onValues(distinctBrannvesen(features));
@@ -136,7 +139,10 @@ export class DatasetSession {
     const features: Feature[] = [];
     try {
       for (const url of urls) {
-        const part = await this.read(url, { signal: request.signal });
+        const part = await this.read(url, {
+          signal: request.signal,
+          onTiming: (timing) => { if (current()) this.observer.onTiming?.(timing); },
+        });
         if (!current()) return;
         features.push(...part);
       }

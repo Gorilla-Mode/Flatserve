@@ -38,14 +38,32 @@ button:hover:not(:disabled) { background: var(--hover); }
 .control-tree ul { margin-left: 12px; padding-left: 16px; }
 .control-tree ul li { position: relative; padding-top: 8px; }
 .control-tree ul li::before { content: ''; position: absolute; left: -16px; top: 0; width: 16px; height: 28px; border-left: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-.control-tree button[aria-pressed="true"] { border-color: var(--green); background: var(--selected); color: var(--selected-text); }
-.control-tree button[aria-pressed="true"]:hover:not(:disabled) { background: #205438; }
+.controls button[aria-pressed="true"] { border-color: var(--green); background: var(--selected); color: var(--selected-text); }
+.controls button[aria-pressed="true"]:hover:not(:disabled) { background: #205438; }
 .controls button:disabled { border-style: dashed; }
 .api-url { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 8px; color: var(--secondary); }
 .status { line-height: 1.5; color: var(--secondary); }
 .request-timings { margin: 16px 0 0; }
 .request-timings figcaption { font-size: 12px; color: var(--secondary); margin-bottom: 8px; }
-.timings-placeholder { height: 100px; border: 1px solid var(--border); background: var(--field); }
+.timings-toggle { width: 100%; margin-top: 8px; font-size: 12px; text-align: left; }
+.timings-metric { font-size: 12px; margin: 8px 0; }
+.timings-chart { border: 1px solid var(--border); background: var(--field); }
+.timings-chart svg { display: block; overflow: visible; }
+.timings-empty { min-height: 100px; margin: 0; padding: 12px; display: grid; place-items: center; color: var(--secondary); font-size: 12px; }
+.timings-axis { fill: var(--secondary); font-size: 11px; }
+.timings-grid { stroke: var(--border); }
+.timings-line { fill: none; stroke: var(--green); stroke-width: 2; }
+.timings-point { cursor: pointer; }
+.timings-hit { fill: transparent; }
+.timings-marker { fill: var(--green); stroke: var(--field); stroke-width: 1.5; pointer-events: none; }
+.timings-point:focus-visible { outline: none; }
+.timings-point:focus-visible .timings-hit { stroke: var(--green); stroke-width: 2; }
+.timing-dialog { width: min(640px, calc(100% - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; }
+.timing-dialog table { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 18px 0; font-size: 12px; }
+.timing-dialog th, .timing-dialog td { border: 1px solid var(--border); padding: 8px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+.timing-dialog th { width: 36%; font-weight: 500; color: var(--secondary); }
+.timing-url { user-select: text; }
+.timing-dialog p { font-size: 12px; }
 .filter-panel { display: grid; gap: 8px; }
 .filter-panel h2 { margin-bottom: 4px; }
 .filter-tree label { display: block; margin-bottom: 8px; }

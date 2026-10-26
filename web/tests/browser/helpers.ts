@@ -42,7 +42,7 @@ export async function expectSidebarLayout(page: Page) {
   expect(filter.x).toBeGreaterThan(select.x);
   expect(filter.y).toBeGreaterThanOrEqual(select.y + select.height);
   expect(filter.x + filter.width).toBeCloseTo(select.x + select.width, 0);
-  const corners = await page.locator('button, input, select, dialog, .controls, .timings-placeholder, .maplibregl-ctrl').evaluateAll((elements) =>
+  const corners = await page.locator('button, input, select, dialog, .controls, .timings-chart, .maplibregl-ctrl').evaluateAll((elements) =>
     elements.map((element) => getComputedStyle(element).borderRadius));
   expect(corners.every((corner) => corner === '0px')).toBe(true);
   const fonts = await page.locator('button, input, select, dialog, .controls, .maplibregl-ctrl').evaluateAll((elements) =>
@@ -63,7 +63,8 @@ export async function expectSidebarLayout(page: Page) {
     await button.focus();
     await expect(button).toHaveCSS('border-radius', '0px');
   }
-  await expect(controls.locator('.request-timings')).toContainText('Request timings');
-  await expect(controls.locator('.timings-placeholder')).toBeEmpty();
+  await expect(controls.locator('.request-timings')).toContainText('API requests');
+  await expect(controls.getByRole('button', { name: 'Include parsing', exact: true })).toBeVisible();
+  await expect(controls.locator('.timings-chart svg')).toBeVisible();
   return map;
 }

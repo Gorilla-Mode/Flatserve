@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Map as MapLibreMap, NavigationControl, setWorkerUrl } from 'maplibre-gl';
 import type { GeoJSONSource } from 'maplibre-gl';
@@ -8,6 +8,8 @@ import { errorMessage, normalizeApiUrl } from './api';
 import { coverageOutline, insetBounds, viewportBounds } from './bounds';
 import type { Bounds } from './bounds';
 import { DatasetSession } from './session';
+import { timingHistory } from './timings';
+import { RequestTimings } from './RequestTimings';
 
 setWorkerUrl(workerUrl);
 const collection = (features: Feature[]): FeatureCollection => ({ type: 'FeatureCollection', features });
@@ -19,7 +21,8 @@ export function App() {
   const featuresRef = useRef<Feature[]>([]);
   const [mapReady, setMapReady] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
-  const [connection, setConnection] = useState<{ url: string } | null>(null);
+  const [connection, setConnection] = useState<{ url: string; id: number } | null>(null);
+  const [timings, recordTiming] = useReducer(timingHistory, []);
   const [connectionOpen, setConnectionOpen] = useState(true);
   const [selectedBrannvesen, setSelectedBrannvesen] = useState('');
   const [filterEnabled, setFilterEnabled] = useState(false);
@@ -99,6 +102,7 @@ export function App() {
       onDiscovery: setDiscovery,
       onValues: setValues,
       onCoverage: setCoverage,
+      onTiming: recordTiming,
       onHeader: (header) => {
         const extent = header.envelope;
         if (fitted || !map.current || !extent || extent.length !== 4 || !Array.from(extent).every(Number.isFinite)) return;
@@ -208,10 +212,7 @@ export function App() {
             void session.current?.refresh();
           }}>Retry</button></div>}
           {mapError && <small className="error" role="alert">{mapError}</small>}
-          <figure className="request-timings">
-            <figcaption>Request timings</figcaption>
-            <div className="timings-placeholder" aria-hidden="true" />
-          </figure>
+          <RequestTimings key={connection?.id ?? 0} records={timings} />
         </section>
         <form className="sidebar-section filter-panel" aria-labelledby="filter-heading" onSubmit={(event) => {
           event.preventDefault();
@@ -245,7 +246,9 @@ export function App() {
         canDismiss={!!connection} onClose={() => setConnectionOpen(false)} onConnect={(url) => {
           setSelectedBrannvesen('');
           setFilterEnabled(false);
-          setConnection({ url });
+          session.current?.dispose();
+          recordTiming(null);
+          setConnection((previous) => ({ url, id: (previous?.id ?? 0) + 1 }));
           setConnectionOpen(false);
         }} />
     </main>

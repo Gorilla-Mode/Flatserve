@@ -4,6 +4,8 @@ import type { DecodeOptions } from './api';
 import { DatasetSession, distinctBrannvesen } from './session';
 import { expandBounds, viewportBounds, WORLD } from './bounds';
 import { station } from '../tests/fixtures';
+import { timingHistory } from './timings';
+import type { TimingRecord } from './timings';
 
 const observers = () => ({
   onFeatures: vi.fn(), onStatus: vi.fn(), onHeader: vi.fn(), onValues: vi.fn(), onDiscovery: vi.fn(),
@@ -11,6 +13,59 @@ const observers = () => ({
 });
 
 const area = (west = 0, east = 10) => viewportBounds(west, 50, east, 60);
+
+describe('session timings', () => {
+  const timing = (url: URL) => ({ url: url.href, requestMs: 10, parseMs: 20, totalMs: 30 });
+
+  it('records concurrent discovery and multipart calls in completion order, excluding reuse and cache hits', async () => {
+    let records: TimingRecord[] = [];
+    const observer = { ...observers(), onTiming: (value: ReturnType<typeof timing>) => { records = timingHistory(records, value); } };
+    const { read, calls } = pendingReader();
+    const session = new DatasetSession('https://example.org', observer, read);
+    const discovery = session.discover();
+    const bounds = viewportBounds(170, 50, 190, 60);
+    const view = session.setBounds(bounds);
+    const complete = (index: number) => {
+      calls[index].options.onTiming?.(timing(calls[index].url));
+      calls[index].resolve([]);
+    };
+    complete(1);
+    await vi.waitFor(() => expect(calls).toHaveLength(3));
+    complete(0);
+    complete(2);
+    await Promise.all([discovery, view]);
+    expect(records.map((record) => record.url)).toEqual([calls[1].url.href, calls[0].url.href, calls[2].url.href]);
+    await session.setBounds(bounds);
+    expect(calls).toHaveLength(3);
+    const filter = session.setFilter('Oslo');
+    complete(3);
+    await filter;
+    await session.setFilter('Oslo');
+    expect(calls).toHaveLength(4);
+    expect(records).toHaveLength(4);
+  });
+
+  it('rejects late callbacks from cancelled and disposed requests, including discovery', async () => {
+    const onTiming = vi.fn();
+    const { read, calls } = pendingReader();
+    const session = new DatasetSession('https://example.org', { ...observers(), onTiming }, read);
+    const promises = [session.discover(), session.discover(), session.setBounds(area()), session.setFilter('Oslo')];
+    for (const index of [0, 2]) {
+      calls[index].options.onTiming?.(timing(calls[index].url));
+      calls[index].resolve([]);
+    }
+    expect(onTiming).not.toHaveBeenCalled();
+    session.dispose();
+    for (const index of [1, 3]) {
+      calls[index].options.onTiming?.(timing(calls[index].url));
+      calls[index].resolve([]);
+    }
+    await Promise.all(promises);
+    await session.discover();
+    expect(calls).toHaveLength(4);
+    expect(onTiming).not.toHaveBeenCalled();
+  });
+});
 
 describe('coverage notifications', () => {
   it('reports empty spatial success, reuses it silently, and keeps it during movement and failures', async () => {

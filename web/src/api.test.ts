@@ -1,7 +1,57 @@
-import { describe, expect, it, vi } from 'vitest';
-import { collectionUrl, decodeResponse, filterUrl, normalizeApiUrl } from './api';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { collectionUrl, decodeResponse, fetchFeatures, filterUrl, normalizeApiUrl } from './api';
 import { WORLD } from './bounds';
 import { chunked, encoded, headerOnly } from '../tests/fixtures';
+
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+describe('request timing', () => {
+  it.each([false, true])('measures headers separately from streaming body completion (empty: %s)', async (empty) => {
+    let clock = 100;
+    vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    let headers!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { headers = resolve; })));
+    let body!: ReadableStreamDefaultController<Uint8Array>;
+    const response = new Response(new ReadableStream<Uint8Array>({ start(controller) { body = controller; } }));
+    const onTiming = vi.fn();
+    const onHeader = vi.fn();
+    const url = filterUrl('https://example.org/proxy', 'Sør & Øst');
+    const result = fetchFeatures(url, { signal: new AbortController().signal, onTiming, onHeader });
+    clock = 125;
+    headers(response);
+    await vi.waitFor(() => expect(response.body?.locked).toBe(true));
+    clock = 175;
+    body.enqueue(empty ? headerOnly(encoded()) : encoded());
+    await vi.waitFor(() => expect(onHeader).toHaveBeenCalledOnce());
+    expect(onTiming).not.toHaveBeenCalled();
+    clock = 245;
+    body.close();
+    expect(await result).toHaveLength(empty ? 0 : 3);
+    expect(onTiming).toHaveBeenCalledExactlyOnceWith({ url: url.href, requestMs: 25, parseMs: 120, totalMs: 145 });
+  });
+
+  it.each(['http', 'decode', 'network', 'abort-fetch', 'abort-body', 'already-aborted'])(
+    'does not publish timing for %s failures', async (failure) => {
+      const controller = new AbortController();
+      const onTiming = vi.fn();
+      const fetchMock = vi.fn(async () => {
+        if (failure === 'network') throw new TypeError('Offline');
+        if (failure === 'abort-fetch') { controller.abort(); controller.signal.throwIfAborted(); }
+        if (failure === 'http') return new Response('error', { status: 503 });
+        if (failure === 'decode') return new Response('invalid FlatGeobuf');
+        return chunked(encoded());
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      if (failure === 'already-aborted') controller.abort();
+      await expect(fetchFeatures(collectionUrl('https://example.org', WORLD), {
+        signal: controller.signal, onTiming,
+        onHeader: () => { if (failure === 'abort-body') controller.abort(); },
+      })).rejects.toThrow();
+      expect(onTiming).not.toHaveBeenCalled();
+      if (failure === 'already-aborted') expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+});
 
 describe('API URLs', () => {
   it('accepts absolute HTTP(S) and preserves a base path', () => {
