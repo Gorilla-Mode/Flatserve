@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { insetBounds, viewportBounds } from './bounds';
+import { containsBounds, containsPoint, expandBounds, insetBounds, viewportBounds, WORLD } from './bounds';
 
 function projection(longitude = 10, bearing = 0, pitch = 0) {
   const cos = Math.cos(bearing);
@@ -84,5 +84,49 @@ describe('camera bounds', () => {
   it('rejects invalid coordinates', () => {
     expect(() => viewportBounds(NaN, 0, 10, 20)).toThrow();
     expect(() => viewportBounds(0, 20, 10, 0)).toThrow();
+  });
+});
+
+describe('buffered bounds', () => {
+  it('adds a quarter of the active size to every side', () => {
+    expect(expandBounds(viewportBounds(4, 58, 12, 62)))
+      .toEqual(viewportBounds(2, 57, 14, 63));
+    expect(expandBounds([])).toEqual([]);
+  });
+  it('clamps latitude and caps longitude at one world', () => {
+    expect(expandBounds(viewportBounds(-120, -80, 120, 80))).toEqual([WORLD]);
+    expect(expandBounds(viewportBounds(0, 80, 10, 90)))
+      .toEqual(viewportBounds(-2.5, 77.5, 12.5, 90));
+    expect(expandBounds([WORLD])).toEqual([WORLD]);
+  });
+  it.each([170, -190, 530])('expands a crossing in world %s without buffering its parts separately', (west) => {
+    const active = viewportBounds(west, -20, west + 20, 20);
+    const buffer = expandBounds(active);
+    expect(buffer).toEqual(viewportBounds(165, -30, 195, 30));
+    expect(containsBounds(buffer, active)).toBe(true);
+    expect(containsBounds(buffer, viewportBounds(170, -30, 195, 30))).toBe(true);
+    expect(containsBounds(buffer, viewportBounds(170, -30, 196, 30))).toBe(false);
+    expect(containsBounds(buffer, viewportBounds(-10, -20, 10, 20))).toBe(false);
+    expect(containsBounds(buffer, viewportBounds(-175, -20, -170, 20))).toBe(true);
+  });
+  it('includes touching edges and points at either representation of the date line', () => {
+    const buffer = viewportBounds(170, -20, 180, 20);
+    expect(containsBounds(buffer, buffer)).toBe(true);
+    expect(containsBounds(buffer, viewportBounds(-180, -20, -180, 20))).toBe(true);
+    expect(containsPoint(buffer, [-180, 20])).toBe(true);
+    expect(containsPoint(buffer, [540, 20])).toBe(true);
+    expect(containsPoint(buffer, [180, 21])).toBe(false);
+    expect(containsBounds([WORLD], viewportBounds(530, -90, 550, 90))).toBe(true);
+    expect(containsBounds(buffer, [WORLD])).toBe(false);
+    expect(containsBounds([], buffer)).toBe(false);
+    expect(containsBounds(buffer, [])).toBe(false);
+  });
+  it('normalizes unwrapped rectangles for containment', () => {
+    expect(containsBounds([{ minX: 364, minY: 58, maxX: 392, maxY: 72 }],
+      viewportBounds(4, 58, 32, 72))).toBe(true);
+    const buffer = expandBounds(viewportBounds(4, 58, 12, 62));
+    expect(containsBounds(buffer, viewportBounds(2, 57, 14, 63))).toBe(true);
+    expect(containsBounds(buffer, viewportBounds(2, 56.99, 14, 63))).toBe(false);
+    expect(containsBounds(buffer, viewportBounds(1.99, 57, 14, 63))).toBe(false);
   });
 });

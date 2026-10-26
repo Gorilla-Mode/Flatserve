@@ -34,7 +34,7 @@ export function App() {
     try {
       instance = new MapLibreMap({
         container: mapContainer.current!,
-        style: 'https://demotiles.maplibre.org/style.json',
+        style: 'https://tiles.openfreemap.org/styles/dark',
         center: [15, 65],
         zoom: 3.5,
         bounds: [[4, 57], [32, 72]],
@@ -75,6 +75,9 @@ export function App() {
     if (!connection) return;
     setSelection('');
     setValues([]);
+    featuresRef.current = [];
+    setCount(0);
+    (map.current?.getSource('stations') as GeoJSONSource | undefined)?.setData(collection([]));
     let fitted = false;
     const current = new DatasetSession(connection.url, {
       onFeatures: (features) => {
@@ -106,7 +109,7 @@ export function App() {
     if (!connection || !mapReady || !map.current) return;
     const instance = map.current;
     const current = session.current!;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let frame: number | undefined;
     const updateArea = () => {
       const canvas = instance.getCanvas();
       const inset = bboxActive ? insetBounds(instance, canvas.clientWidth, canvas.clientHeight) : null;
@@ -116,33 +119,32 @@ export function App() {
         bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth(),
       );
     };
-    let bounds = updateArea();
     // Set the selection and its current bounds together when returning from a text filter.
-    void current.setFilter(selection, bounds);
-    const cancel = () => {
-      clearTimeout(timer);
-      current.cancelViewport();
+    // This also invalidates incompatible coverage when the bbox mode changes.
+    void current.setFilter(selection, updateArea());
+    const update = () => {
+      frame = undefined;
+      void current.setBounds(updateArea());
     };
-    const move = () => { bounds = updateArea(); };
     const schedule = () => {
-      cancel();
-      bounds = updateArea();
-      timer = setTimeout(() => { void current.setBounds(bounds); }, 250);
+      if (frame === undefined) frame = requestAnimationFrame(update);
     };
-    instance.on('movestart', cancel);
-    instance.on('move', move);
-    instance.on('moveend', schedule);
+    const finish = () => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      update();
+    };
+    instance.on('move', schedule);
+    instance.on('moveend', finish);
     instance.on('resize', schedule);
     return () => {
-      cancel();
-      instance.off('movestart', cancel);
-      instance.off('move', move);
-      instance.off('moveend', schedule);
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      instance.off('move', schedule);
+      instance.off('moveend', finish);
       instance.off('resize', schedule);
     };
   }, [connection, mapReady, bboxActive, selection]);
 
-  const countLabel = `${count.toLocaleString()} features${bboxActive ? ' in bbox' : ''}`;
+  const countLabel = `${count.toLocaleString()} features${selection ? ' matching filter' : bboxActive ? ' in bbox' : ' in view'}`;
 
   return (
     <main>

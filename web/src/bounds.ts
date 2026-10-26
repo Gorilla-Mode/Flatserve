@@ -9,6 +9,46 @@ export interface Bounds {
 
 export const WORLD: Bounds = { minX: -180, minY: -90, maxX: 180, maxY: 90 };
 
+/** Recover the continuous longitude interval from viewportBounds' ordered parts. */
+function continuousBounds(bounds: Bounds[]): Bounds | undefined {
+  const parts = bounds.flatMap((b) => viewportBounds(b.minX, b.minY, b.maxX, b.maxY));
+  if (!parts.length) return;
+  return {
+    minX: parts[0].minX,
+    maxX: parts[0].minX + Math.min(360, parts.reduce((width, b) => width + b.maxX - b.minX, 0)),
+    minY: parts[0].minY,
+    maxY: parts[0].maxY,
+  };
+}
+
+/** Add 25% of the active width/height on each side, then normalize/split. */
+export function expandBounds(bounds: Bounds[]): Bounds[] {
+  const area = continuousBounds(bounds);
+  if (!area) return [];
+  const x = (area.maxX - area.minX) * 0.25;
+  const y = (area.maxY - area.minY) * 0.25;
+  return viewportBounds(area.minX - x, area.minY - y, area.maxX + x, area.maxY + y);
+}
+
+/** Inclusive containment of geographic rectangles, including repeated worlds. */
+export function containsBounds(buffer: Bounds[], bounds: Bounds[]): boolean {
+  const outer = continuousBounds(buffer);
+  const inner = continuousBounds(bounds);
+  if (!outer || !inner || inner.minY < outer.minY || inner.maxY > outer.maxY) return false;
+  const width = outer.maxX - outer.minX;
+  if (width >= 360) return true;
+  const offset = ((inner.minX - outer.minX) % 360 + 360) % 360;
+  return offset + inner.maxX - inner.minX <= width + 1e-9;
+}
+
+export function containsPoint(bounds: Bounds[], coordinates: number[]): boolean {
+  const [longitude, latitude] = coordinates;
+  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return false;
+  const x = ((longitude + 180) % 360 + 360) % 360 - 180;
+  return bounds.some((b) => latitude >= b.minY && latitude <= b.maxY
+    && ((x >= b.minX && x <= b.maxX) || (x === -180 && b.maxX === 180)));
+}
+
 interface Projection {
   project(coordinates: [number, number]): { x: number; y: number };
   unproject(point: [number, number]): { lng: number; lat: number };

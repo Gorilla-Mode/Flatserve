@@ -1,7 +1,7 @@
 import type { Feature } from 'geojson';
 import { collectionUrl, errorMessage, fetchFeatures, filterUrl } from './api';
 import type { HeaderMeta } from './api';
-import { WORLD } from './bounds';
+import { containsBounds, containsPoint, expandBounds, WORLD } from './bounds';
 import type { Bounds } from './bounds';
 
 interface Observer {
@@ -27,6 +27,11 @@ export class DatasetSession {
   private disposed = false;
   private selection = '';
   private bounds: Bounds[] = [];
+  private coverage?: Bounds[];
+  private features: Feature[] = [];
+  private displayed = '[]';
+  private failedTarget?: string;
+  private pending?: Promise<void>;
 
   constructor(
     private readonly base: string,
@@ -55,7 +60,9 @@ export class DatasetSession {
 
   setBounds(bounds: Bounds[]): Promise<void> {
     this.bounds = bounds;
-    return this.selection === '' ? this.refresh() : Promise.resolve();
+    if (this.disposed || this.selection !== '') return Promise.resolve();
+    this.publish();
+    return this.schedule();
   }
 
   setFilter(selection: string, bounds = this.bounds): Promise<void> {
@@ -64,51 +71,87 @@ export class DatasetSession {
     return this.refresh();
   }
 
-  cancelViewport(): void {
-    if (this.selection === '') this.cancelView();
-  }
-
   private cancelView(): void {
     this.generation++;
     this.viewRequest?.abort();
+    this.viewRequest = undefined;
+    this.pending = undefined;
   }
 
-  async refresh(): Promise<void> {
+  refresh(): Promise<void> {
     this.cancelView();
-    if (this.disposed) return;
+    this.coverage = undefined;
+    this.failedTarget = undefined;
+    if (this.disposed) return Promise.resolve();
+    if (!this.selection) this.publish();
+    return this.schedule();
+  }
+
+  /** Publish only a changed visible subset; movement never changes filter matches. */
+  private publish(): void {
+    const visible = this.selection ? this.features : this.features.filter((feature) =>
+      feature.geometry?.type === 'Point' && containsPoint(this.bounds, feature.geometry.coordinates));
+    const signature = JSON.stringify(visible);
+    if (signature === this.displayed) return;
+    this.displayed = signature;
+    this.observer.onFeatures(visible);
+  }
+
+  private schedule(): Promise<void> {
+    if (this.disposed) return Promise.resolve();
+    // Movement only updates the desired bounds while one logical request is active.
+    if (this.viewRequest) return this.pending!;
+    const selection = this.selection;
+    const cached = selection ? this.cache.get(selection) : undefined;
+    if (cached) {
+      this.features = cached;
+      this.publish();
+      this.observer.onStatus({ loading: false, error: null });
+      return Promise.resolve();
+    }
+    if (!selection && this.coverage && containsBounds(this.coverage, this.bounds)) {
+      this.observer.onStatus({ loading: false, error: null });
+      return Promise.resolve();
+    }
+    const buffer = expandBounds(this.bounds);
+    const target = selection || JSON.stringify(buffer);
+    if ((!selection && !buffer.length) || target === this.failedTarget) return Promise.resolve();
+    const urls = selection ? [filterUrl(this.base, selection)]
+      : buffer.map((bounds) => collectionUrl(this.base, bounds));
     const generation = this.generation;
     const request = new AbortController();
     this.viewRequest = request;
+    this.pending = this.load(urls, buffer, target, selection, generation, request);
+    return this.pending;
+  }
+
+  private async load(urls: URL[], buffer: Bounds[], target: string, selection: string,
+    generation: number, request: AbortController): Promise<void> {
     const current = () => !this.disposed && generation === this.generation && !request.signal.aborted;
-    const selection = this.selection;
-    const cached = this.cache.get(selection);
-    if (cached) {
-      this.observer.onFeatures(cached);
-      this.observer.onStatus({ loading: false, error: null });
-      return;
-    }
-    const urls = selection ? [filterUrl(this.base, selection)]
-      : this.bounds.map((bounds) => collectionUrl(this.base, bounds));
-    if (!urls.length) return;
-    this.observer.onFeatures([]);
     this.observer.onStatus({ loading: true, error: null });
     const features: Feature[] = [];
     try {
       for (const url of urls) {
-        const part = await this.read(url, {
-          signal: request.signal,
-          onBatch: (batch) => {
-            if (current()) this.observer.onFeatures([...features, ...batch]);
-          },
-        });
+        const part = await this.read(url, { signal: request.signal });
         if (!current()) return;
         features.push(...part);
       }
       if (selection) this.cache.set(selection, features);
-      this.observer.onFeatures(features);
+      else this.coverage = buffer;
+      this.features = features;
+      this.failedTarget = undefined;
+      this.publish();
       this.observer.onStatus({ loading: false, error: null });
     } catch (error) {
-      if (current()) this.observer.onStatus({ loading: false, error: errorMessage(error) });
+      if (!current()) return;
+      this.failedTarget = target;
+      this.observer.onStatus({ loading: false, error: errorMessage(error) });
+    }
+    if (current()) {
+      this.viewRequest = undefined;
+      this.pending = undefined;
+      // A slow response may cover an old camera position. Catch up immediately.
+      if (!selection) await this.schedule();
     }
   }
 

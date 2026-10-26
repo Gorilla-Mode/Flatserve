@@ -7,7 +7,7 @@ button:disabled { cursor: default; }
 button, input, select { border: 1px solid #aaa; border-radius: 4px; background: #fff; color: inherit; }
 button:hover:not(:disabled) { background: #f0f0f0; }
 :focus-visible { outline: 2px solid #235ca5; outline-offset: 2px; }
-.map { position: fixed; inset: 0; }
+.map { position: fixed; inset: 0; background: #0c0c0c; }
 .controls { position: absolute; top: 12px; left: 12px; width: min(340px, calc(100% - 24px)); background: #fffffff2; border: 1px solid #ccc; border-radius: 5px; padding: 10px; box-shadow: 0 1px 5px #0002; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .toolbar button[aria-pressed="true"] { border-color: #16a34a; background: #dcfce7; }
