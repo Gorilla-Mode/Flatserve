@@ -21,8 +21,9 @@ export function App() {
   const [mapError, setMapError] = useState<string | null>(null);
   const [connection, setConnection] = useState<{ url: string } | null>(null);
   const [connectionOpen, setConnectionOpen] = useState(true);
-  const [filterOpen, setFilterOpen] = useState(false);
-  const [selection, setSelection] = useState('');
+  const [selectedBrannvesen, setSelectedBrannvesen] = useState('');
+  const [filterEnabled, setFilterEnabled] = useState(false);
+  const selection = filterEnabled ? selectedBrannvesen : '';
   const [bboxEnabled, setBboxEnabled] = useState(false);
   const [bufferEnabled, setBufferEnabled] = useState(true);
   const [showBuffer, setShowBuffer] = useState(false);
@@ -83,7 +84,6 @@ export function App() {
 
   useEffect(() => {
     if (!connection) return;
-    setSelection('');
     setValues([]);
     featuresRef.current = [];
     setCount(0);
@@ -164,56 +164,87 @@ export function App() {
   const countLabel = `${count.toLocaleString()} features${selection ? ' matching filter' : bboxActive ? ' in bbox' : ' in view'}`;
 
   return (
-    <main>
-      <div ref={mapContainer} className="map" aria-label="Map of fire stations" />
+    <main className="workspace">
       <section className="controls" aria-label="Map controls">
-        <div className="toolbar">
-          <div className="toolbar-heading">
+        <header className="sidebar-header">
+          <div className="connection-heading">
             <strong>Flatserve</strong>
-            <button onClick={() => setConnectionOpen(true)}>Connection</button>
+            <button aria-haspopup="dialog" onClick={() => setConnectionOpen(true)}>Connect</button>
           </div>
-          <div className="toolbar-settings">
-            <button disabled={!connection} aria-expanded={filterOpen} aria-controls="filter-panel"
-              onClick={() => setFilterOpen(!filterOpen)}>Filter{selection ? ' •' : ''}</button>
-            <button disabled={!connection || !mapReady || selection !== ''} aria-pressed={bboxActive}
-              onClick={() => setBboxEnabled(!bboxEnabled)}>BBox</button>
-            <button disabled={!connection || !mapReady || selection !== ''} aria-pressed={bufferEnabled}
-              title="Fetch an extra 25% on each side of the viewport or BBox to reduce requests while moving."
-              onClick={() => setBufferEnabled(!bufferEnabled)}>Buffer</button>
+          <small className="api-url" title={connection?.url}>{connection?.url ?? 'Not connected'}</small>
+        </header>
+        <section className="sidebar-section" aria-labelledby="options-heading">
+          <h2 id="options-heading">Options</h2>
+          <ul className="control-tree options-tree">
+            <li>
+              <button disabled={!connection || !mapReady || selection !== ''} aria-pressed={bboxActive}
+                onClick={() => setBboxEnabled(!bboxEnabled)}>BBox</button>
+            </li>
+            <li>
+              <button disabled={!connection || !mapReady || selection !== ''} aria-pressed={bufferEnabled}
+                title="Fetch an extra 25% on each side of the viewport or BBox to reduce requests while moving."
+                onClick={() => setBufferEnabled(!bufferEnabled)}>Buffer</button>
+              <ul>
+                <li>
+                  <button disabled={!canShowBuffer} aria-pressed={showBuffer}
+                    title="Show a red outline around the last successfully fetched buffer coverage."
+                    onClick={() => setShowBuffer(!showBuffer)}>Show buffer</button>
+                </li>
+              </ul>
+            </li>
+          </ul>
+        </section>
+        <section className="sidebar-section" aria-labelledby="status-heading">
+          <h2 id="status-heading">Status</h2>
+          <div className="status" role="status" aria-live="polite">
+            {!connection ? 'Connect to an API to view fire stations.'
+              : status.loading ? `Loading… ${countLabel}`
+              : status.error ? `${countLabel} loaded`
+              : bboxActive ? countLabel
+              : count === 0 ? 'No features found.'
+              : `${count.toLocaleString()} features${selection ? ' matching filter' : ' in view'}`}
           </div>
-          <button disabled={!canShowBuffer} aria-pressed={showBuffer}
-            title="Show a red outline around the last successfully fetched buffer coverage."
-            onClick={() => setShowBuffer(!showBuffer)}>Show buffer</button>
-        </div>
-        {connection && <small className="api-url" title={connection.url}>{connection.url}</small>}
-        {filterOpen && <div id="filter-panel" className="filter-panel">
-          <label htmlFor="brannvesen">Brannvesen</label>
-          <select id="brannvesen" value={selection} onChange={(event) => {
-            setSelection(event.target.value);
-          }}>
-            <option value="">All brannvesen</option>
-            {values.map((value) => <option key={value} value={value}>{value}</option>)}
-          </select>
+          {status.error && <div className="error" role="alert">{status.error} <button onClick={() => {
+            void session.current?.refresh();
+          }}>Retry</button></div>}
+          {mapError && <small className="error" role="alert">{mapError}</small>}
+          <figure className="request-timings">
+            <figcaption>Request timings</figcaption>
+            <div className="timings-placeholder" aria-hidden="true" />
+          </figure>
+        </section>
+        <form className="sidebar-section filter-panel" aria-labelledby="filter-heading" onSubmit={(event) => {
+          event.preventDefault();
+          if (values.includes(selectedBrannvesen)) setFilterEnabled((enabled) => !enabled);
+        }}>
+          <h2 id="filter-heading">Filter</h2>
+          <ul className="control-tree filter-tree">
+            <li>
+              <label htmlFor="brannvesen">Brannvesen</label>
+              <select id="brannvesen" disabled={!connection} value={selectedBrannvesen} onChange={(event) => {
+                setSelectedBrannvesen(event.target.value);
+              }}>
+                <option value="" disabled>Select brannvesen</option>
+                {values.map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
+              <ul>
+                <li>
+                  <button type="submit" disabled={!values.includes(selectedBrannvesen)} aria-pressed={filterEnabled}>Filter</button>
+                </li>
+              </ul>
+            </li>
+          </ul>
           {discovery.loading && <small>Loading filter values…</small>}
-          {discovery.error && <small className="error" role="alert">Filters: {discovery.error} <button onClick={() => {
+          {discovery.error && <small className="error" role="alert">Filters: {discovery.error} <button type="button" onClick={() => {
             void session.current?.discover();
           }}>Retry filters</button></small>}
-        </div>}
-        <div className="status" role="status" aria-live="polite">
-          {!connection ? 'Connect to an API to view fire stations.'
-            : status.loading ? `Loading… ${countLabel}`
-            : status.error ? `${countLabel} loaded`
-            : bboxActive ? countLabel
-            : count === 0 ? 'No features found.'
-            : `${count.toLocaleString()} features${selection ? ' matching filter' : ' in view'}`}
-        </div>
-        {status.error && <div className="error" role="alert">{status.error} <button onClick={() => {
-          void session.current?.refresh();
-        }}>Retry</button></div>}
-        {mapError && <small className="error" role="alert">{mapError}</small>}
+        </form>
       </section>
+      <div ref={mapContainer} className="map" aria-label="Map of fire stations" />
       <ConnectionDialog open={connectionOpen} initialUrl={connection?.url ?? 'http://localhost:5220'}
         canDismiss={!!connection} onClose={() => setConnectionOpen(false)} onConnect={(url) => {
+          setSelectedBrannvesen('');
+          setFilterEnabled(false);
           setConnection({ url });
           setConnectionOpen(false);
         }} />

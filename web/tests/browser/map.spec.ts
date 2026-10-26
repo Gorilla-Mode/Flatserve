@@ -1,5 +1,6 @@
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import { expectSidebarLayout, moveOnMap, test } from './helpers';
 
 async function greenOutline(page: Page) {
   return outlinePixels(page, [22, 163, 74]);
@@ -10,7 +11,7 @@ async function redOutline(page: Page) {
 }
 
 async function outlinePixels(page: Page, color: number[]) {
-  const screenshot = await page.locator('.maplibregl-canvas').screenshot({ mask: [page.locator('.controls')] });
+  const screenshot = await page.locator('.maplibregl-canvas').screenshot();
   return page.evaluate(async ({ base64, color }) => {
     const image = new Image();
     image.src = `data:image/png;base64,${base64}`;
@@ -66,7 +67,7 @@ test('Show buffer draws fetched coverage, stays fixed during reuse and pending w
   await expect(show).toHaveAttribute('aria-pressed', 'false');
   await expect(show).toHaveAttribute('title', /red.*fetched.*coverage/);
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('639 features in view');
   await expect(show).toBeDisabled();
   const bbox = page.getByRole('button', { name: 'BBox', exact: true });
@@ -110,9 +111,9 @@ test('Show buffer draws fetched coverage, stays fixed during reuse and pending w
   await expect(page.getByRole('status')).toHaveText(status);
   expect(requests).toHaveLength(before);
 
-  await page.mouse.move(700, 450);
+  await moveOnMap(page, .45, .625);
   await page.mouse.down();
-  await page.mouse.move(740, 450, { steps: 10 });
+  await moveOnMap(page, .45 + 40 / red.width, .625, 10);
   const reused = await redOutline(page);
   expect(Math.abs(reused.minX - red.minX - 40)).toBeLessThan(3);
   expect(Math.abs(reused.maxX - red.maxX - 40)).toBeLessThan(3);
@@ -128,7 +129,7 @@ test('Show buffer draws fetched coverage, stays fixed during reuse and pending w
     await held;
     await route.fulfill({ response });
   });
-  await page.mouse.move(940, 450, { steps: 20 });
+  await moveOnMap(page, .45 + 240 / red.width, .625, 20);
   await expect.poll(() => requests.length).toBe(before + 1);
   await expect(page.getByRole('status')).toContainText('Loading');
   const pending = await redOutline(page);
@@ -160,7 +161,7 @@ test('preserves Show buffer through prerequisites and reconnections, hiding cove
   await page.goto('./');
   const show = page.getByRole('button', { name: 'Show buffer', exact: true });
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(show).toBeDisabled();
   releaseStyle();
   await expect(page.getByRole('status')).toHaveText('639 features in view');
@@ -178,14 +179,14 @@ test('preserves Show buffer through prerequisites and reconnections, hiding cove
     await expect(show).toBeEnabled();
     await expect.poll(async () => (await redOutline(page)).count).toBeGreaterThan(100);
   }
-  await page.getByRole('button', { name: 'Filter', exact: true }).click();
   const select = page.getByLabel('Brannvesen', { exact: true });
   await select.selectOption({ label: 'Oslo brann- og redningsetat' });
+  await page.getByRole('button', { name: 'Filter', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('7 features matching filter');
   await expect(show).toBeDisabled();
   await expect(show).toHaveAttribute('aria-pressed', 'true');
   expect((await redOutline(page)).count).toBe(0);
-  await select.selectOption('');
+  await page.getByRole('button', { name: 'Filter', exact: true }).click();
   await expect(show).toBeEnabled();
   await expect.poll(async () => (await redOutline(page)).count).toBeGreaterThan(100);
   let releaseRequest!: () => void;
@@ -195,8 +196,8 @@ test('preserves Show buffer through prerequisites and reconnections, hiding cove
     await heldRequest;
     await route.fulfill({ response });
   });
-  await page.getByRole('button', { name: 'Connection', exact: true }).click();
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.locator('.controls').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(page.getByRole('status')).toContainText('Loading');
   await expect(show).toHaveAttribute('aria-pressed', 'true');
   expect((await redOutline(page)).count).toBe(0);
@@ -216,14 +217,15 @@ test('connects, loads stations, caches filters through camera moves, and prompts
   await expect(page.getByRole('dialog')).toBeVisible();
   await expect(page.getByLabel('API URL', { exact: true })).toHaveValue('http://localhost:5220');
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(page.getByRole('dialog')).not.toBeVisible();
   await expect(page.getByRole('status')).toHaveText('639 features in view');
   await expect(page.locator('.maplibregl-canvas')).toBeVisible();
-  await page.getByRole('button', { name: 'Filter', exact: true }).click();
+  await expectSidebarLayout(page);
   const select = page.getByLabel('Brannvesen', { exact: true });
   await expect(select.locator('option', { hasText: 'Oslo brann- og redningsetat' })).toHaveCount(1);
   await select.selectOption({ label: 'Oslo brann- og redningsetat' });
+  await page.getByRole('button', { name: 'Filter', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('7 features matching filter');
   const requestCount = requests.length;
   await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
@@ -235,7 +237,7 @@ test('connects, loads stations, caches filters through camera moves, and prompts
   await select.selectOption({ label: 'Oslo brann- og redningsetat' });
   await expect(page.getByRole('status')).toHaveText('7 features matching filter');
   expect(requests.filter((url) => url.includes('/filter?'))).toHaveLength(2);
-  await select.selectOption('');
+  await page.getByRole('button', { name: 'Filter', exact: true }).click();
   await expect.poll(() => requests.filter((url) => url.includes('/collection?')).length).toBeGreaterThan(2);
   await expect(page.getByRole('status')).toHaveText(/\d+ features in view/);
   await expect.poll(async () => Number((await page.getByRole('status').innerText()).split(' ')[0]),
@@ -247,16 +249,166 @@ test('connects, loads stations, caches filters through camera moves, and prompts
   await expect(page.getByRole('dialog')).toBeVisible();
 });
 
+test('toggles filtering, updates active selections immediately, restores spatial settings, and resets on reconnect', async ({ page }) => {
+  const requests: string[] = [];
+  page.on('request', (request) => { if (request.url().includes('/fgb/')) requests.push(request.url()); });
+  await page.goto('./');
+  const select = page.getByLabel('Brannvesen', { exact: true });
+  const filter = page.getByRole('button', { name: 'Filter', exact: true });
+  await expect(select).toBeDisabled();
+  await expect(select).toHaveValue('');
+  await expect(select.locator('option:checked')).toHaveText('Select brannvesen');
+  await expect(select.locator('option:checked')).toBeDisabled();
+  await expect(select.locator('option', { hasText: 'All brannvesen' })).toHaveCount(0);
+  await expect(filter).toBeDisabled();
+  await expect(filter).toHaveAttribute('aria-pressed', 'false');
+  await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
+  await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('639 features in view');
+  await expect(filter).toBeDisabled();
+  await expect(select).toHaveValue('');
+  const bbox = page.getByRole('button', { name: 'BBox', exact: true });
+  const buffer = page.getByRole('button', { name: 'Buffer', exact: true });
+  const show = page.getByRole('button', { name: 'Show buffer', exact: true });
+  await bbox.click();
+  await show.click();
+  await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
+  const status = await page.getByRole('status').innerText();
+  const before = requests.length;
+  await select.selectOption({ label: 'Kristiansandsregionen BR' });
+  await select.selectOption({ label: 'Oslo brann- og redningsetat' });
+  await expect(filter).toBeEnabled();
+  await page.waitForTimeout(200);
+  expect(requests).toHaveLength(before);
+  await expect(page.getByRole('status')).toHaveText(status);
+  await expect(show).toBeEnabled();
+  expect((await redOutline(page)).count).toBeGreaterThan(100);
+
+  // Keyboard submission uses the same toggle handler as clicking Filter.
+  await filter.focus();
+  await page.keyboard.press('Enter');
+  await expect(filter).toHaveAttribute('aria-pressed', 'true');
+  await expect(filter).toHaveCSS('border-color', 'rgb(74, 222, 128)');
+  await expect(page.getByRole('status')).toHaveText('7 features matching filter');
+  for (const control of [bbox, buffer, show]) await expect(control).toBeDisabled();
+  expect((await greenOutline(page)).count).toBe(0);
+  expect((await redOutline(page)).count).toBe(0);
+  const nextFilter = page.waitForRequest((request) => request.url().includes('/filter?')
+    && new URL(request.url()).searchParams.get('value') === 'Kristiansandsregionen BR');
+  await select.selectOption({ label: 'Kristiansandsregionen BR' });
+  await nextFilter;
+  await expect(page.getByRole('status')).toHaveText('7 features matching filter');
+  await expect(filter).toHaveAttribute('aria-pressed', 'true');
+  for (let i = 0; i < 2; i++) {
+    await filter.click();
+    await expect(filter).toHaveAttribute('aria-pressed', 'false');
+    await expect(filter).toBeEnabled();
+    await expect(select).toHaveValue('Kristiansandsregionen BR');
+    await expect(page.getByRole('status')).toHaveText(status);
+    for (const control of [bbox, buffer, show]) {
+      await expect(control).toBeEnabled();
+      await expect(control).toHaveAttribute('aria-pressed', 'true');
+    }
+    await expect.poll(async () => (await redOutline(page)).count).toBeGreaterThan(100);
+    await filter.click();
+    await expect(page.getByRole('status')).toHaveText('7 features matching filter');
+  }
+  expect(requests.filter((url) => url.includes('/filter?'))).toHaveLength(2);
+  await page.locator('.controls').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(select).toHaveValue('');
+  await expect(filter).toBeDisabled();
+  await expect(filter).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
+  await expect(bbox).toBeEnabled();
+  await select.selectOption({ label: 'Oslo brann- og redningsetat' });
+  await filter.click();
+  await expect(page.getByRole('status')).toHaveText('7 features matching filter');
+  await page.reload();
+  await expect(select).toHaveValue('');
+  await expect(filter).toBeDisabled();
+  await expect(filter).toHaveAttribute('aria-pressed', 'false');
+});
+
+for (const action of ['change selection', 'toggle off', 'reconnect'] as const) {
+  test(`cancels a delayed filter on ${action} and ignores its late response`, async ({ page }) => {
+    await page.goto('./');
+    await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
+    await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(page.getByRole('status')).toHaveText('639 features in view');
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let aborted = false;
+    let finished = false;
+    let delayedUrl = '';
+    page.on('requestfailed', (request) => { if (request.url() === delayedUrl) aborted = true; });
+    await page.route('http://localhost:5221/fgb/filter?**', async (route) => {
+      if (new URL(route.request().url()).searchParams.get('value') !== 'Oslo brann- og redningsetat') return route.continue();
+      delayedUrl = route.request().url();
+      // Empty results make an incorrectly accepted late response observable.
+      const response = await route.fetch({ url: 'http://localhost:5221/fgb/collection?minX=-1&minY=-1&maxX=1&maxY=1' });
+      await held;
+      await route.fulfill({ response });
+      finished = true;
+    });
+    const select = page.getByLabel('Brannvesen', { exact: true });
+    const filter = page.getByRole('button', { name: 'Filter', exact: true });
+    await select.selectOption({ label: 'Oslo brann- og redningsetat' });
+    await filter.click();
+    await expect(page.getByRole('status')).toContainText('Loading');
+    await expect(filter).toBeEnabled();
+    if (action === 'change selection') {
+      await select.selectOption({ label: 'Kristiansandsregionen BR' });
+    } else if (action === 'toggle off') {
+      await filter.click();
+      await expect(select).toHaveValue('Oslo brann- og redningsetat');
+    } else {
+      await page.locator('.controls').getByRole('button', { name: 'Connect', exact: true }).click();
+      await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+      await expect(select).toHaveValue('');
+    }
+    const expected = action === 'change selection' ? '7 features matching filter' : '639 features in view';
+    await expect(page.getByRole('status')).toHaveText(expected);
+    await expect.poll(() => aborted).toBe(true);
+    release();
+    await expect.poll(() => finished).toBe(true);
+    await expect(page.getByRole('status')).toHaveText(expected);
+  });
+}
+
+test('Filter stays clickable after errors and can retry by toggling off and on', async ({ page }) => {
+  let fail = true;
+  await page.route('http://localhost:5221/fgb/filter?**', (route) => fail
+    ? route.fulfill({ status: 503, body: 'Unavailable', headers: { 'Access-Control-Allow-Origin': '*' } })
+    : route.continue());
+  await page.goto('./');
+  await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
+  await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('639 features in view');
+  await page.getByLabel('Brannvesen', { exact: true }).selectOption({ label: 'Oslo brann- og redningsetat' });
+  const filter = page.getByRole('button', { name: 'Filter', exact: true });
+  await filter.click();
+  await expect(page.getByRole('alert')).toContainText('API returned HTTP 503.');
+  await expect(filter).toBeEnabled();
+  await expect(filter).toHaveAttribute('aria-pressed', 'true');
+  await filter.click();
+  await expect(page.getByRole('status')).toHaveText('639 features in view');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  fail = false;
+  await filter.click();
+  await expect(page.getByRole('status')).toHaveText('7 features matching filter');
+});
+
 test('validates the URL and changes a connection while preserving its base path', async ({ page }) => {
   await page.goto('./');
   const input = page.getByLabel('API URL', { exact: true });
   await input.fill('ftp://example.org');
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveText('Enter an absolute HTTP(S) API URL.');
   await input.fill('http://localhost:5221');
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('639 features in view');
-  await page.getByRole('button', { name: 'Connection', exact: true }).click();
+  await page.locator('.controls').getByRole('button', { name: 'Connect', exact: true }).click();
   const paths: string[] = [];
   await page.route('http://localhost:5221/proxy/v1/**', async (route) => {
     const original = new URL(route.request().url());
@@ -265,7 +417,7 @@ test('validates the URL and changes a connection while preserving its base path'
     paths.push(original.pathname);
   });
   await input.fill('http://localhost:5221/proxy/v1');
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('639 features in view');
   await expect(page.locator('.api-url')).toHaveText('http://localhost:5221/proxy/v1/');
   await expect.poll(() => paths.length).toBeGreaterThanOrEqual(2);
@@ -278,7 +430,7 @@ test('fits on a phone viewport without horizontal overflow', async ({ page }) =>
   await page.goto('./');
   await expect(page.getByRole('dialog')).toBeVisible();
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('639 features in view');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
@@ -300,7 +452,7 @@ test('shows empty results, reports request errors, and retries', async ({ page }
   });
   await page.goto('./');
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('No features found.');
   mode = 'error';
   // Zooming in stays inside the empty successful buffer. Zoom out to exceed it.
@@ -327,7 +479,7 @@ test('bbox follows the camera, survives filters, wraps on mobile, and restores v
   await expect(bbox).toBeDisabled();
   await expect(bbox).toHaveAttribute('aria-pressed', 'false');
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('639 features in view');
   await expect(bbox).toBeEnabled();
   await page.waitForTimeout(350);
@@ -365,9 +517,9 @@ test('bbox follows the camera, survives filters, wraps on mobile, and restores v
   expect(requests.at(-1)!.search).toBe(viewport.search);
   expect((await greenOutline(page)).count).toBe(0);
   await bbox.click();
-  await page.getByRole('button', { name: 'Filter', exact: true }).click();
   const select = page.getByLabel('Brannvesen', { exact: true });
   await select.selectOption({ label: 'Oslo brann- og redningsetat' });
+  await page.getByRole('button', { name: 'Filter', exact: true }).click();
   await expect(bbox).toBeDisabled();
   await expect(bbox).toHaveAttribute('aria-pressed', 'false');
   await expect(page.getByRole('status')).toHaveText('7 features matching filter');
@@ -376,17 +528,16 @@ test('bbox follows the camera, survives filters, wraps on mobile, and restores v
   await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
   await page.waitForTimeout(700);
   expect(requests).toHaveLength(filteredRequests);
-  await select.selectOption('');
+  await page.getByRole('button', { name: 'Filter', exact: true }).click();
   await expect(bbox).toBeEnabled();
   await expect(bbox).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
   expect(requests.at(-1)!.search).not.toBe(inset.search);
-  await page.getByRole('button', { name: 'Filter', exact: true }).click();
   // Pan, then rotate and tilt with MapLibre's right-button gesture.
   for (const button of ['left', 'right'] as const) {
-    await page.mouse.move(700, 450);
+    await moveOnMap(page, .55, .625);
     await page.mouse.down({ button });
-    await page.mouse.move(850, button === 'right' ? 330 : 550, { steps: 20 });
+    await moveOnMap(page, .67, button === 'right' ? .46 : .76, 20);
     await page.mouse.up({ button });
     await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
     await expectInsetOutline(page);
@@ -396,9 +547,9 @@ test('bbox follows the camera, survives filters, wraps on mobile, and restores v
   await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
   await expectInsetOutline(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  const toolbar = await page.locator('.toolbar').boundingBox();
+  const toolbar = await page.locator('.options-tree').boundingBox();
   const bboxButton = await bbox.boundingBox();
-  expect(bboxButton!.y).toBeGreaterThan(toolbar!.y + 10);
+  expect(bboxButton!.y).toBe(toolbar!.y);
   await page.screenshot({ path: 'test-results/bbox-mobile.png' });
   expect(requests.filter((url) => url.searchParams.get('minX') === '-180')).toHaveLength(1);
   expect(errors).toEqual([]);
@@ -409,7 +560,7 @@ test('bbox follows the camera, survives filters, wraps on mobile, and restores v
 test('turning bbox off cancels a delayed request and ignores its late response', async ({ page }) => {
   await page.goto('./');
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('639 features in view');
   await page.waitForTimeout(350);
   let release!: () => void;
@@ -453,12 +604,12 @@ for (const useBbox of [false, true]) {
     });
     await page.goto('./');
     await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
-    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
     await expect(page.getByRole('status')).toHaveText('639 features in view');
-    await expect(page.getByLabel('Brannvesen', { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel('Brannvesen', { exact: true })).toBeVisible();
     await page.waitForTimeout(200);
     const beforeZoom = requests.length;
-    await page.mouse.move(640, 420);
+    await moveOnMap(page, .5, .58);
     await page.mouse.wheel(0, -300);
     await expect(page.getByRole('status')).not.toHaveText('639 features in view');
     await page.waitForTimeout(500);
@@ -483,13 +634,13 @@ for (const useBbox of [false, true]) {
       await held;
       await route.fulfill({ response });
     });
-    await page.mouse.move(1150, 450);
+    await moveOnMap(page, .9, .625);
     await page.mouse.down();
-    await page.mouse.move(700, 450, { steps: 30 });
+    await moveOnMap(page, .55, .625, 30);
     // Both the request and local display update happen before mouseup/moveend.
     await expect.poll(() => requests.length).toBe(beforeDrag + 1);
     await expect(page.getByRole('status')).not.toHaveText(initialStatus);
-    await page.mouse.move(150, 450, { steps: 30 });
+    await moveOnMap(page, .12, .625, 30);
     await page.waitForTimeout(150);
     expect(requests).toHaveLength(beforeDrag + 1);
     expect(failed).toEqual([]);
@@ -509,12 +660,12 @@ test('requests new coverage while wheel scrolling is still ongoing', async ({ pa
   page.on('request', (request) => { if (request.url().includes('/fgb/collection?')) requests++; });
   await page.goto('./');
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('639 features in view');
   await page.getByRole('button', { name: 'BBox', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
   const before = requests;
-  await page.mouse.move(640, 420);
+  await moveOnMap(page, .5, .58);
   let finished = false;
   const scrolling = (async () => {
     for (let i = 0; i < 20; i++) {
@@ -543,7 +694,7 @@ for (const useBbox of [false, true]) {
     await expect(buffer).toBeDisabled();
     await expect(buffer).toHaveAttribute('aria-pressed', 'true');
     await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
-    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
     await expect(page.getByRole('status')).toHaveText('639 features in view');
     await expect(buffer).toBeEnabled();
     const bboxResponse = page.waitForResponse((response) => response.url().includes('/fgb/collection?'));
@@ -608,7 +759,7 @@ test('preserves Buffer across filters, bbox changes and reconnects, then resets 
   await page.goto('./');
   const buffer = page.getByRole('button', { name: 'Buffer', exact: true });
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(buffer).toBeDisabled();
   releaseStyle();
   await expect(buffer).toBeEnabled();
@@ -616,18 +767,18 @@ test('preserves Buffer across filters, bbox changes and reconnects, then resets 
   await buffer.click();
   await expect(buffer).toHaveAttribute('aria-pressed', 'false');
   await page.getByRole('button', { name: 'BBox', exact: true }).click();
-  await page.getByRole('button', { name: 'Filter', exact: true }).click();
   const select = page.getByLabel('Brannvesen', { exact: true });
   await select.selectOption({ label: 'Oslo brann- og redningsetat' });
+  await page.getByRole('button', { name: 'Filter', exact: true }).click();
   await expect(buffer).toBeDisabled();
   await expect(buffer).toHaveAttribute('aria-pressed', 'false');
   await expect(page.getByRole('status')).toHaveText('7 features matching filter');
-  await select.selectOption('');
+  await page.getByRole('button', { name: 'Filter', exact: true }).click();
   await expect(buffer).toBeEnabled();
   await expect(buffer).toHaveAttribute('aria-pressed', 'false');
   await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
-  await page.getByRole('button', { name: 'Connection', exact: true }).click();
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.locator('.controls').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(buffer).toHaveAttribute('aria-pressed', 'false');
   await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
   await page.reload();
@@ -635,28 +786,32 @@ test('preserves Buffer across filters, bbox changes and reconnects, then resets 
   await expect(buffer).toHaveAttribute('aria-pressed', 'true');
 });
 
-for (const width of [280, 375]) {
+for (const width of [1280, 280, 375]) {
   test(`dark controls, dialog, errors and focus fit at ${width}px with readable contrast`, async ({ page }) => {
     await page.setViewportSize({ width, height: 700 });
     await page.goto('./');
     const input = page.getByLabel('API URL', { exact: true });
     await input.fill('ftp://example.org');
-    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
     await expect(page.getByRole('alert')).toBeVisible();
     await input.focus();
     await expect(input).toHaveCSS('outline-color', 'rgb(74, 222, 128)');
+    await expect(input).toHaveCSS('border-radius', '0px');
+    await expect(page.getByRole('dialog')).toHaveCSS('border-radius', '0px');
+    await expect(page.getByRole('dialog')).toHaveCSS('font-family', /JetBrains Mono/);
     await page.screenshot({ path: `test-results/dialog-${width}.png` });
     await input.fill('http://localhost:5221');
-    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
     await expect(page.getByRole('status')).toHaveText('639 features in view');
-    await page.getByRole('button', { name: 'Filter', exact: true }).click();
     await expect(page.getByLabel('Brannvesen', { exact: true })).toBeVisible();
+    await expectSidebarLayout(page);
+    await page.locator('.controls').getByRole('button', { name: 'Connect', exact: true }).focus();
     await page.keyboard.press('Tab');
     await page.keyboard.press('Tab');
     await expect(page.getByRole('button', { name: 'Buffer', exact: true })).toBeFocused();
     await expect(page.getByRole('button', { name: 'Buffer', exact: true })).toHaveCSS('outline-color', 'rgb(74, 222, 128)');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    const measurements = await page.locator('.toolbar button, .maplibregl-ctrl-group button, select').evaluateAll((elements) =>
+    const measurements = await page.locator('.controls button, .maplibregl-ctrl-group button, select').evaluateAll((elements) =>
       elements.map((element) => ({ width: element.getBoundingClientRect().width, height: element.getBoundingClientRect().height })));
     for (const size of measurements) {
       expect(size.width).toBeGreaterThanOrEqual(40);
@@ -678,5 +833,15 @@ for (const width of [280, 375]) {
     });
     for (const pair of contrast) expect(pair.ratio, `${pair.fg} on ${pair.bg}`).toBeGreaterThanOrEqual(4.5);
     await page.screenshot({ path: `test-results/controls-${width}.png` });
+    // On short screens the sidebar scrolls independently, keeping the map fixed.
+    await page.setViewportSize({ width, height: 360 });
+    const map = await expectSidebarLayout(page);
+    const controls = page.locator('.controls');
+    await controls.hover({ position: { x: 30, y: 250 } });
+    await page.mouse.wheel(0, 500);
+    await expect.poll(() => controls.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    await expect(page.getByLabel('Brannvesen', { exact: true })).toBeInViewport();
+    expect(await page.locator('.map').boundingBox()).toEqual(map);
+    expect(await page.evaluate(() => document.scrollingElement!.scrollTop)).toBe(0);
   });
 }

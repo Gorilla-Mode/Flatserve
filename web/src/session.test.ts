@@ -338,6 +338,35 @@ function pendingReader() {
 }
 
 describe('connection sessions', () => {
+  it('cancels spatial and filter requests through rapid toggles without publishing or caching stale results', async () => {
+    const observer = observers();
+    const { read, calls } = pendingReader();
+    const session = new DatasetSession('https://example.org', observer, read);
+    const spatial = session.setFilter('', area(), false);
+    const oslo = session.setFilter('Oslo');
+    const other = session.setFilter('Other');
+    const restored = session.setFilter('', area(20, 30));
+    expect(calls.slice(0, 3).every((call) => call.options.signal.aborted)).toBe(true);
+    expect(calls[3].url.searchParams.get('minX')).toBe('20');
+    calls[3].resolve([station('current', 25)]);
+    await restored;
+    observer.onFeatures.mockClear();
+    observer.onStatus.mockClear();
+    observer.onCoverage.mockClear();
+    calls[0].resolve([station('stale spatial', 25)]);
+    calls[1].resolve([station('stale Oslo', 25)]);
+    calls[2].reject(new Error('Stale filter failure'));
+    await Promise.all([spatial, oslo, other]);
+    expect(observer.onFeatures).not.toHaveBeenCalled();
+    expect(observer.onStatus).not.toHaveBeenCalled();
+    expect(observer.onCoverage).not.toHaveBeenCalled();
+    const retry = session.setFilter('Oslo');
+    expect(calls).toHaveLength(5);
+    calls[4].resolve([station('fresh Oslo', 8)]);
+    await retry;
+    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('fresh Oslo', 8)]);
+  });
+
   it('discovers sorted distinct nonempty values in a separate full-world request', async () => {
     expect(distinctBrannvesen([station('Z'), station('A'), station('A'), station(' '),
       { ...station(''), properties: null }])).toEqual(['A', 'Z']);

@@ -1,6 +1,7 @@
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
 import { ByteBuffer } from 'flatbuffers';
 import { Header } from 'flatgeobuf/lib/mjs/flat-geobuf/header.js';
+import { expectSidebarLayout, moveOnMap, test } from './helpers';
 
 // Opt in separately: the regular browser suite never depends on public tiles.
 test('OpenFreeMap Dark renders roads, labels, attribution, and overlays at city and street scales', async ({ page }) => {
@@ -25,7 +26,7 @@ test('OpenFreeMap Dark renders roads, labels, attribution, and overlays at city 
   expect(style.layers.some((layer: { id: string; type: string }) => layer.type === 'line' && /road|highway/i.test(layer.id))).toBe(true);
   expect(style.layers.some((layer: { id: string; type: string }) => layer.type === 'symbol' && /road|highway/i.test(layer.id))).toBe(true);
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText(/^\d+ features in view$/, { timeout: 30_000 });
   await page.waitForLoadState('networkidle');
   await expect(page.locator('.maplibregl-ctrl-attrib')).toContainText('OpenFreeMap');
@@ -33,6 +34,7 @@ test('OpenFreeMap Dark renders roads, labels, attribution, and overlays at city 
   expect(loaded.some((url) => url.includes('/fonts/'))).toBe(true);
   expect(loaded.some((url) => /\/\d+\/\d+\/\d+\.pbf/.test(url))).toBe(true);
   await expect(page.getByRole('alert')).toHaveCount(0);
+  await expectSidebarLayout(page);
   await page.getByRole('button', { name: 'BBox', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
   await page.getByRole('button', { name: 'Show buffer', exact: true }).click();
@@ -55,9 +57,9 @@ test('OpenFreeMap Dark renders roads, labels, attribution, and overlays at city 
   await page.waitForLoadState('networkidle');
   await refreshCoverage();
   await page.screenshot({ path: 'test-results/dark-street.png' });
-  await page.mouse.move(700, 450);
+  await moveOnMap(page, .55, .625);
   await page.mouse.down({ button: 'right' });
-  await page.mouse.move(850, 330, { steps: 20 });
+  await moveOnMap(page, .67, .46, 20);
   await page.mouse.up({ button: 'right' });
   await page.waitForLoadState('networkidle');
   await refreshCoverage();
@@ -70,14 +72,11 @@ test('OpenFreeMap Dark renders roads, labels, attribution, and overlays at city 
     const show = page.getByRole('button', { name: 'Show buffer', exact: true });
     await expect(show).toBeEnabled();
     await expect(show).toHaveAttribute('aria-pressed', 'true');
-    const toolbar = await page.locator('.toolbar').boundingBox();
-    const settings = await page.locator('.toolbar-settings').boundingBox();
-    const button = await show.boundingBox();
-    expect(button!.y).toBeGreaterThanOrEqual(settings!.y + settings!.height);
-    expect(button!.width).toBeCloseTo(toolbar!.width, 0);
+    const map = await expectSidebarLayout(page);
     const attribution = page.locator('.maplibregl-ctrl-attrib');
     if ((await attribution.getAttribute('open')) === null) await attribution.locator('summary').click();
     const link = attribution.locator('a[href*="openstreetmap.org"]');
+    await link.scrollIntoViewIfNeeded();
     await expect(link).toBeVisible();
     await expect(attribution).toHaveCSS('background-color', 'rgb(23, 27, 32)');
     await expect(link).toHaveCSS('color', 'rgb(229, 231, 235)');
@@ -85,7 +84,7 @@ test('OpenFreeMap Dark renders roads, labels, attribution, and overlays at city 
     await link.focus();
     await expect(link).toHaveCSS('outline-color', 'rgb(74, 222, 128)');
     const box = await attribution.boundingBox();
-    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x).toBeGreaterThanOrEqual(map.x);
     expect(box!.x + box!.width).toBeLessThanOrEqual(width);
     await expect(page.getByRole('alert')).toHaveCount(0);
     await page.screenshot({ path: `test-results/dark-mobile-${width}.png` });
