@@ -12,6 +12,77 @@ const observers = () => ({
 const area = (west = 0, east = 10) => viewportBounds(west, 50, east, 60);
 
 describe('buffered live updates', () => {
+  it('requests exact bounds with Buffer off and reuses containing coverage with live filtering', async () => {
+    const observer = observers();
+    const read = vi.fn().mockResolvedValue([station('inside', 8), station('edge', 10)]);
+    const session = new DatasetSession('https://example.org', observer, read);
+    await session.setFilter('', area(), false);
+    expect(Object.fromEntries(read.mock.calls[0][0].searchParams)).toEqual({
+      minX: '0', minY: '50', maxX: '10', maxY: '60',
+    });
+    await session.setBounds(area(7, 9));
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('inside', 8)]);
+    await session.setBounds(area(7, 11));
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(read.mock.lastCall?.[0].searchParams.get('maxX')).toBe('11');
+  });
+
+  it('preserves Buffer through filter/cache and bbox changes and Retry', async () => {
+    const read = vi.fn().mockResolvedValue([station('Oslo', 8)]);
+    const session = new DatasetSession('https://example.org', observers(), read);
+    await session.setFilter('', area(), false);
+    await session.setFilter('Oslo');
+    await session.setFilter('', area(7, 9));
+    expect(read.mock.lastCall?.[0].searchParams.get('minX')).toBe('7');
+    await session.refresh();
+    expect(read.mock.lastCall?.[0].searchParams.get('minX')).toBe('7');
+    const before = read.mock.calls.length;
+    await session.setFilter('Oslo');
+    expect(read).toHaveBeenCalledTimes(before);
+    await session.setFilter('', area());
+    expect(read.mock.lastCall?.[0].searchParams.get('minX')).toBe('0');
+    await session.setFilter('', area(), true);
+    expect(read.mock.lastCall?.[0].searchParams.get('minX')).toBe('-2.5');
+  });
+
+  it.each([false, true])('cancels pending work when Buffer becomes %s and rejects stale success and errors', async (enabled) => {
+    const observer = observers();
+    const { read, calls } = pendingReader();
+    const session = new DatasetSession('https://example.org', observer, read);
+    const initial = session.setFilter('', area(), !enabled);
+    calls[0].resolve([station('saved', 8)]);
+    await initial;
+    const staleSuccess = session.refresh();
+    const staleFailure = session.setFilter('', area(), enabled);
+    const latest = session.setFilter('', area(), !enabled);
+    expect(calls[1].options.signal.aborted).toBe(true);
+    expect(calls[2].options.signal.aborted).toBe(true);
+    expect(observer.onFeatures).toHaveBeenCalledTimes(1);
+    calls[1].resolve([station('stale', 9)]);
+    calls[2].reject(new Error('Stale failure'));
+    await Promise.all([staleSuccess, staleFailure]);
+    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('saved', 8)]);
+    expect(observer.onStatus.mock.lastCall?.[0]).toEqual({ loading: true, error: null });
+    calls[3].resolve([station('current', 9)]);
+    await latest;
+    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('current', 9)]);
+  });
+
+  it('invalidates successful coverage and failed targets even if toggling leaves request bounds identical', async () => {
+    const read = vi.fn().mockResolvedValueOnce([]).mockRejectedValueOnce(new Error('Offline')).mockResolvedValue([]);
+    const observer = observers();
+    const session = new DatasetSession('https://example.org', observer, read);
+    await session.setBounds([WORLD]);
+    await session.setFilter('', [WORLD], false);
+    expect(read).toHaveBeenCalledTimes(2);
+    await session.setBounds([WORLD]);
+    expect(read).toHaveBeenCalledTimes(2);
+    await session.setFilter('', [WORLD], true);
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(observer.onStatus.mock.lastCall?.[0]).toEqual({ loading: false, error: null });
+  });
+
   it('requests a buffer, filters locally during movement, and publishes only changed subsets', async () => {
     const observer = observers();
     const read = vi.fn().mockResolvedValue([station('inside', 8), station('buffer', 12), station('outside', 20)]);

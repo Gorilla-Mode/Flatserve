@@ -23,6 +23,7 @@ export function App() {
   const [filterOpen, setFilterOpen] = useState(false);
   const [selection, setSelection] = useState('');
   const [bboxEnabled, setBboxEnabled] = useState(false);
+  const [bufferEnabled, setBufferEnabled] = useState(true);
   const bboxActive = bboxEnabled && selection === '';
   const [values, setValues] = useState<string[]>([]);
   const [count, setCount] = useState(0);
@@ -119,9 +120,8 @@ export function App() {
         bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth(),
       );
     };
-    // Set the selection and its current bounds together when returning from a text filter.
-    // This also invalidates incompatible coverage when the bbox mode changes.
-    void current.setFilter(selection, updateArea());
+    // Apply all query settings atomically and invalidate incompatible coverage/work.
+    void current.setFilter(selection, updateArea(), bufferEnabled);
     const update = () => {
       frame = undefined;
       void current.setBounds(updateArea());
@@ -142,7 +142,7 @@ export function App() {
       instance.off('moveend', finish);
       instance.off('resize', schedule);
     };
-  }, [connection, mapReady, bboxActive, selection]);
+  }, [connection, mapReady, bboxActive, selection, bufferEnabled]);
 
   const countLabel = `${count.toLocaleString()} features${selection ? ' matching filter' : bboxActive ? ' in bbox' : ' in view'}`;
 
@@ -151,12 +151,19 @@ export function App() {
       <div ref={mapContainer} className="map" aria-label="Map of fire stations" />
       <section className="controls" aria-label="Map controls">
         <div className="toolbar">
-          <strong>Flatserve</strong>
-          <button onClick={() => setConnectionOpen(true)}>Connection</button>
-          <button disabled={!connection} aria-expanded={filterOpen} aria-controls="filter-panel"
-            onClick={() => setFilterOpen(!filterOpen)}>Filter{selection ? ' •' : ''}</button>
-          <button disabled={!connection || !mapReady || selection !== ''} aria-pressed={bboxActive}
-            onClick={() => setBboxEnabled(!bboxEnabled)}>BBox</button>
+          <div className="toolbar-heading">
+            <strong>Flatserve</strong>
+            <button onClick={() => setConnectionOpen(true)}>Connection</button>
+          </div>
+          <div className="toolbar-settings">
+            <button disabled={!connection} aria-expanded={filterOpen} aria-controls="filter-panel"
+              onClick={() => setFilterOpen(!filterOpen)}>Filter{selection ? ' •' : ''}</button>
+            <button disabled={!connection || !mapReady || selection !== ''} aria-pressed={bboxActive}
+              onClick={() => setBboxEnabled(!bboxEnabled)}>BBox</button>
+            <button disabled={!connection || !mapReady || selection !== ''} aria-pressed={bufferEnabled}
+              title="Fetch an extra 25% on each side of the viewport or BBox to reduce requests while moving."
+              onClick={() => setBufferEnabled(!bufferEnabled)}>Buffer</button>
+          </div>
         </div>
         {connection && <small className="api-url" title={connection.url}>{connection.url}</small>}
         {filterOpen && <div id="filter-panel" className="filter-panel">
@@ -168,7 +175,7 @@ export function App() {
             {values.map((value) => <option key={value} value={value}>{value}</option>)}
           </select>
           {discovery.loading && <small>Loading filter values…</small>}
-          {discovery.error && <small role="alert">Filters: {discovery.error} <button onClick={() => {
+          {discovery.error && <small className="error" role="alert">Filters: {discovery.error} <button onClick={() => {
             void session.current?.discover();
           }}>Retry filters</button></small>}
         </div>}

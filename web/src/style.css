@@ -1,28 +1,74 @@
-:root { font-family: system-ui, sans-serif; color: #242424; background: #dce6ed; font-size: 14px; }
+:root {
+  color-scheme: dark;
+  --page: #0c0c0c;
+  --panel: #171b20;
+  --field: #222830;
+  --text: #e5e7eb;
+  --secondary: #a3abb7;
+  --error: #fca5a5;
+  --border: #46515f;
+  --hover: #303945;
+  --green: #4ade80;
+  --selected: #163c29;
+  --selected-text: #bbf7d0;
+  font-family: system-ui, sans-serif;
+  color: var(--text);
+  background: var(--page);
+  font-size: 14px;
+}
 * { box-sizing: border-box; }
 body { margin: 0; }
-button, input, select { font: inherit; }
-button { cursor: pointer; padding: .35rem .65rem; }
-button:disabled { cursor: default; }
-button, input, select { border: 1px solid #aaa; border-radius: 4px; background: #fff; color: inherit; }
-button:hover:not(:disabled) { background: #f0f0f0; }
-:focus-visible { outline: 2px solid #235ca5; outline-offset: 2px; }
-.map { position: fixed; inset: 0; background: #0c0c0c; }
-.controls { position: absolute; top: 12px; left: 12px; width: min(340px, calc(100% - 24px)); background: #fffffff2; border: 1px solid #ccc; border-radius: 5px; padding: 10px; box-shadow: 0 1px 5px #0002; }
-.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.toolbar button[aria-pressed="true"] { border-color: #16a34a; background: #dcfce7; }
+button, input, select { font: inherit; min-height: 40px; }
+button { cursor: pointer; padding: .45rem .75rem; }
+button:disabled { cursor: default; color: var(--secondary); }
+button, input, select { border: 1px solid var(--border); border-radius: 6px; background: var(--field); color: inherit; }
+button:hover:not(:disabled) { background: var(--hover); }
+:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.map { position: fixed; inset: 0; background: var(--page); }
+.controls { position: absolute; top: 12px; left: 12px; width: min(340px, calc(100% - 24px)); background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px; box-shadow: 0 4px 16px #0005; }
+.toolbar { display: grid; gap: 8px; }
+.toolbar-heading, .toolbar-settings { display: flex; align-items: center; gap: 8px; }
+.toolbar-settings button { flex: 1; min-width: 0; }
+.toolbar button[aria-pressed="true"], .toolbar button[aria-expanded="true"] { border-color: var(--green); background: var(--selected); color: var(--selected-text); }
+.toolbar button[aria-pressed="true"]:hover:not(:disabled), .toolbar button[aria-expanded="true"]:hover:not(:disabled) { background: #205438; }
+.toolbar button:disabled { border-style: dashed; }
 .toolbar strong { flex: 1; font-size: 16px; }
-.api-url { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 7px; color: #555; }
-.status { margin-top: 9px; }
-.filter-panel { display: grid; gap: 6px; margin-top: 12px; }
-select { width: 100%; padding: 6px; }
-.error { color: #92251d; overflow-wrap: anywhere; margin-top: 8px; }
-dialog { width: min(420px, calc(100% - 32px)); padding: 24px; color: inherit; border: 1px solid #aaa; border-radius: 6px; box-shadow: 0 10px 40px #0003; }
-dialog::backdrop { background: #12202f66; }
+.api-url { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 8px; color: var(--secondary); }
+.status { margin-top: 10px; line-height: 1.5; color: var(--secondary); }
+.filter-panel { display: grid; gap: 8px; margin-top: 12px; }
+.filter-panel small, dialog p { color: var(--secondary); }
+select { width: 100%; min-width: 0; padding: 8px; }
+option { color: var(--text); background: var(--field); }
+.error, .filter-panel .error, dialog .error { color: var(--error); overflow-wrap: anywhere; margin-top: 8px; }
+dialog { width: min(420px, calc(100% - 32px)); padding: 24px; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 40px #0008; }
+dialog::backdrop { background: #0009; }
 h1 { font-size: 21px; margin: 0 0 10px; }
 dialog p { line-height: 1.5; margin: 0 0 18px; }
 dialog label { display: block; margin-bottom: 6px; }
 dialog input { width: 100%; padding: 9px; }
+input::placeholder { color: var(--secondary); opacity: 1; }
 dialog .error { margin: 8px 0; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
-@media (max-width: 480px) { .controls { top: 8px; left: 8px; width: calc(100% - 16px); } dialog { padding: 20px; } }
+.maplibregl-ctrl-group { background: var(--field); border: 1px solid var(--border); border-radius: 8px; }
+.maplibregl-ctrl-group:not(:empty) { box-shadow: 0 4px 16px #0005; }
+.maplibregl-ctrl-group button { width: 40px; height: 40px; }
+.maplibregl-ctrl-group button + button { border-top-color: var(--border); }
+.maplibregl-ctrl button:not(:disabled):hover, .maplibregl-ctrl button:not(:disabled):active { background-color: var(--hover); }
+.maplibregl-ctrl-icon { filter: invert(1); }
+.maplibregl-ctrl-group button:focus:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; box-shadow: none; }
+.maplibregl-ctrl.maplibregl-ctrl-attrib { background: var(--panel); color: var(--secondary); border-radius: 6px; }
+.maplibregl-ctrl-attrib.maplibregl-compact { min-height: 40px; padding: 0 40px 0 0; }
+.maplibregl-ctrl-attrib.maplibregl-compact-show { padding-left: 8px; }
+.maplibregl-ctrl-attrib a { color: var(--text); text-decoration: underline; }
+.maplibregl-ctrl-attrib a:hover { color: var(--selected-text); }
+.maplibregl-ctrl-attrib .maplibregl-ctrl-attrib-button {
+  width: 40px; height: 40px; border-radius: 6px;
+  background-color: transparent; background-repeat: no-repeat; background-position: center;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 20 20' fill='%23e5e7eb' fill-rule='evenodd'%3E%3Cpath d='M4 10a6 6 0 1 0 12 0 6 6 0 1 0-12 0m5-3a1 1 0 1 0 2 0 1 1 0 1 0-2 0m0 3a1 1 0 1 1 2 0v3a1 1 0 1 1-2 0'/%3E%3C/svg%3E");
+}
+.maplibregl-ctrl-attrib-button:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; box-shadow: none; }
+@media (max-width: 480px) {
+  .controls { top: 8px; left: 8px; width: calc(100% - 16px); }
+  dialog { padding: 20px; }
+  .maplibregl-ctrl-attrib a { display: inline-block; min-height: 40px; line-height: 40px; }
+}

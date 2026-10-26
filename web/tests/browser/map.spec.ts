@@ -369,3 +369,152 @@ test('requests new coverage while wheel scrolling is still ongoing', async ({ pa
   }
   await expect(page.getByRole('status')).not.toContainText('Loading');
 });
+
+for (const useBbox of [false, true]) {
+  test(`Buffer switches exact and expanded ${useBbox ? 'bbox' : 'viewport'} requests and cancels slow work`, async ({ page }) => {
+    const requests: URL[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/fgb/collection?')) requests.push(new URL(request.url()));
+    });
+    await page.goto('./');
+    const buffer = page.getByRole('button', { name: 'Buffer', exact: true });
+    await expect(buffer).toBeDisabled();
+    await expect(buffer).toHaveAttribute('aria-pressed', 'true');
+    await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(page.getByRole('status')).toHaveText('639 features in view');
+    await expect(buffer).toBeEnabled();
+    const bboxResponse = page.waitForResponse((response) => response.url().includes('/fgb/collection?'));
+    await page.getByRole('button', { name: 'BBox', exact: true }).click();
+    await bboxResponse;
+    await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
+    if (!useBbox) {
+      await page.getByRole('button', { name: 'BBox', exact: true }).click();
+      await expect(page.getByRole('status')).toHaveText('639 features in view');
+    }
+    const expanded = requests.at(-1)!;
+    const initialStatus = await page.getByRole('status').innerText();
+    const outline = await greenOutline(page);
+    await buffer.click();
+    await expect(buffer).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.getByRole('status')).toHaveText(initialStatus);
+    const exact = requests.at(-1)!;
+    for (const axis of ['X', 'Y']) {
+      const min = Number(exact.searchParams.get(`min${axis}`));
+      const max = Number(exact.searchParams.get(`max${axis}`));
+      expect(Number(expanded.searchParams.get(`min${axis}`))).toBeCloseTo(min - (max - min) * .25, 7);
+      expect(Number(expanded.searchParams.get(`max${axis}`))).toBeCloseTo(max + (max - min) * .25, 7);
+    }
+    expect(await greenOutline(page)).toEqual(outline);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let delayedUrl = '';
+    let finished = false;
+    let aborted = false;
+    let delayNext = true;
+    page.on('requestfailed', (request) => { if (request.url() === delayedUrl) aborted = true; });
+    await page.route('http://localhost:5221/fgb/collection?**', async (route) => {
+      if (!delayNext) return route.continue();
+      delayNext = false;
+      delayedUrl = route.request().url();
+      const response = await route.fetch({ url: 'http://localhost:5221/fgb/collection?minX=-1&minY=-1&maxX=1&maxY=1' });
+      await held;
+      await route.fulfill({ response });
+      finished = true;
+    });
+    await buffer.click();
+    await expect.poll(() => delayedUrl).not.toBe('');
+    await expect(page.getByRole('status')).toHaveText(`Loading… ${initialStatus}`);
+    await buffer.click();
+    await expect(page.getByRole('status')).toHaveText(initialStatus);
+    await expect.poll(() => aborted).toBe(true);
+    release();
+    await expect.poll(() => finished).toBe(true);
+    await expect(page.getByRole('status')).toHaveText(initialStatus);
+    expect(requests.at(-1)!.search).toBe(exact.search);
+    expect(await greenOutline(page)).toEqual(outline);
+  });
+}
+
+test('preserves Buffer across filters, bbox changes and reconnects, then resets on reload', async ({ page }) => {
+  let releaseStyle!: () => void;
+  const heldStyle = new Promise<void>((resolve) => { releaseStyle = resolve; });
+  await page.route('https://tiles.openfreemap.org/**', async (route) => {
+    await heldStyle;
+    await route.fulfill({ json: { version: 8, sources: {}, layers: [] } });
+  });
+  await page.goto('./');
+  const buffer = page.getByRole('button', { name: 'Buffer', exact: true });
+  await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(buffer).toBeDisabled();
+  releaseStyle();
+  await expect(buffer).toBeEnabled();
+  await expect(page.getByRole('status')).toHaveText('639 features in view');
+  await buffer.click();
+  await expect(buffer).toHaveAttribute('aria-pressed', 'false');
+  await page.getByRole('button', { name: 'BBox', exact: true }).click();
+  await page.getByRole('button', { name: 'Filter', exact: true }).click();
+  const select = page.getByLabel('Brannvesen', { exact: true });
+  await select.selectOption({ label: 'Oslo brann- og redningsetat' });
+  await expect(buffer).toBeDisabled();
+  await expect(buffer).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByRole('status')).toHaveText('7 features matching filter');
+  await select.selectOption('');
+  await expect(buffer).toBeEnabled();
+  await expect(buffer).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
+  await page.getByRole('button', { name: 'Connection', exact: true }).click();
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(buffer).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
+  await page.reload();
+  await expect(buffer).toBeDisabled();
+  await expect(buffer).toHaveAttribute('aria-pressed', 'true');
+});
+
+for (const width of [280, 375]) {
+  test(`dark controls, dialog, errors and focus fit at ${width}px with readable contrast`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 700 });
+    await page.goto('./');
+    const input = page.getByLabel('API URL', { exact: true });
+    await input.fill('ftp://example.org');
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(page.getByRole('alert')).toBeVisible();
+    await input.focus();
+    await expect(input).toHaveCSS('outline-color', 'rgb(74, 222, 128)');
+    await page.screenshot({ path: `test-results/dialog-${width}.png` });
+    await input.fill('http://localhost:5221');
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(page.getByRole('status')).toHaveText('639 features in view');
+    await page.getByRole('button', { name: 'Filter', exact: true }).click();
+    await expect(page.getByLabel('Brannvesen', { exact: true })).toBeVisible();
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('button', { name: 'Buffer', exact: true })).toBeFocused();
+    await expect(page.getByRole('button', { name: 'Buffer', exact: true })).toHaveCSS('outline-color', 'rgb(74, 222, 128)');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const measurements = await page.locator('.toolbar button, .maplibregl-ctrl-group button, select').evaluateAll((elements) =>
+      elements.map((element) => ({ width: element.getBoundingClientRect().width, height: element.getBoundingClientRect().height })));
+    for (const size of measurements) {
+      expect(size.width).toBeGreaterThanOrEqual(40);
+      expect(size.height).toBeGreaterThanOrEqual(40);
+    }
+    const contrast = await page.evaluate(() => {
+      const style = getComputedStyle(document.documentElement);
+      const luminance = (token: string) => {
+        const hex = style.getPropertyValue(token).trim().slice(1);
+        const rgb = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+          .map((v) => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4);
+        return rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722;
+      };
+      return [
+        ['--text', '--panel'], ['--text', '--field'], ['--text', '--hover'],
+        ['--secondary', '--panel'], ['--secondary', '--field'], ['--error', '--panel'],
+        ['--selected-text', '--selected'],
+      ].map(([fg, bg]) => ({ fg, bg, ratio: (luminance(fg) + .05) / (luminance(bg) + .05) }));
+    });
+    for (const pair of contrast) expect(pair.ratio, `${pair.fg} on ${pair.bg}`).toBeGreaterThanOrEqual(4.5);
+    await page.screenshot({ path: `test-results/controls-${width}.png` });
+  });
+}

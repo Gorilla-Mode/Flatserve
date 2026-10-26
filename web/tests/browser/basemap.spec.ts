@@ -49,12 +49,23 @@ test('OpenFreeMap Dark renders roads, labels, attribution, and overlays at city 
   await page.mouse.up({ button: 'right' });
   await page.waitForLoadState('networkidle');
   await page.screenshot({ path: 'test-results/dark-tilted.png' });
-  await page.setViewportSize({ width: 375, height: 700 });
-  await page.waitForLoadState('networkidle');
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  const attribution = page.locator('.maplibregl-ctrl-attrib');
-  if ((await attribution.getAttribute('open')) === null) await attribution.locator('summary').click();
-  await expect(attribution.locator('a[href*="openstreetmap.org"]')).toBeVisible();
-  await expect(page.getByRole('alert')).toHaveCount(0);
-  await page.screenshot({ path: 'test-results/dark-mobile.png' });
+  for (const width of [375, 280]) {
+    await page.setViewportSize({ width, height: 700 });
+    await page.waitForLoadState('networkidle');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const attribution = page.locator('.maplibregl-ctrl-attrib');
+    if ((await attribution.getAttribute('open')) === null) await attribution.locator('summary').click();
+    const link = attribution.locator('a[href*="openstreetmap.org"]');
+    await expect(link).toBeVisible();
+    await expect(attribution).toHaveCSS('background-color', 'rgb(23, 27, 32)');
+    await expect(link).toHaveCSS('color', 'rgb(229, 231, 235)');
+    await page.keyboard.press('Tab');
+    await link.focus();
+    await expect(link).toHaveCSS('outline-color', 'rgb(74, 222, 128)');
+    const box = await attribution.boundingBox();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await page.screenshot({ path: `test-results/dark-mobile-${width}.png` });
+  }
 });

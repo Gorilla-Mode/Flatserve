@@ -26,6 +26,7 @@ export class DatasetSession {
   private generation = 0;
   private disposed = false;
   private selection = '';
+  private bufferEnabled = true;
   private bounds: Bounds[] = [];
   private coverage?: Bounds[];
   private features: Feature[] = [];
@@ -65,9 +66,10 @@ export class DatasetSession {
     return this.schedule();
   }
 
-  setFilter(selection: string, bounds = this.bounds): Promise<void> {
+  setFilter(selection: string, bounds = this.bounds, bufferEnabled = this.bufferEnabled): Promise<void> {
     this.selection = selection;
     this.bounds = bounds;
+    this.bufferEnabled = bufferEnabled;
     return this.refresh();
   }
 
@@ -113,19 +115,19 @@ export class DatasetSession {
       this.observer.onStatus({ loading: false, error: null });
       return Promise.resolve();
     }
-    const buffer = expandBounds(this.bounds);
-    const target = selection || JSON.stringify(buffer);
-    if ((!selection && !buffer.length) || target === this.failedTarget) return Promise.resolve();
+    const requestBounds = this.bufferEnabled ? expandBounds(this.bounds) : this.bounds;
+    const target = selection || JSON.stringify(requestBounds);
+    if ((!selection && !requestBounds.length) || target === this.failedTarget) return Promise.resolve();
     const urls = selection ? [filterUrl(this.base, selection)]
-      : buffer.map((bounds) => collectionUrl(this.base, bounds));
+      : requestBounds.map((bounds) => collectionUrl(this.base, bounds));
     const generation = this.generation;
     const request = new AbortController();
     this.viewRequest = request;
-    this.pending = this.load(urls, buffer, target, selection, generation, request);
+    this.pending = this.load(urls, requestBounds, target, selection, generation, request);
     return this.pending;
   }
 
-  private async load(urls: URL[], buffer: Bounds[], target: string, selection: string,
+  private async load(urls: URL[], requestBounds: Bounds[], target: string, selection: string,
     generation: number, request: AbortController): Promise<void> {
     const current = () => !this.disposed && generation === this.generation && !request.signal.aborted;
     this.observer.onStatus({ loading: true, error: null });
@@ -137,7 +139,7 @@ export class DatasetSession {
         features.push(...part);
       }
       if (selection) this.cache.set(selection, features);
-      else this.coverage = buffer;
+      else this.coverage = requestBounds;
       this.features = features;
       this.failedTarget = undefined;
       this.publish();
