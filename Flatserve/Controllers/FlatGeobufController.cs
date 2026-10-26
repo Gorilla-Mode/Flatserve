@@ -36,6 +36,9 @@ public class FlatGeobufController(FgbDataset fgbDataset) : ControllerBase
     [Route("feature/{featureIndex:int}")]
     public IActionResult FeatureString(int featureIndex)
     {
+        if (featureIndex < 0 || featureIndex >= fgbDataset.FeaturePtrs.Count)
+            return BadRequest("Feature index is out of bounds.");
+
         return File(fgbDataset.GetFeatureBytes(fgbDataset.FeaturePtrs[featureIndex]), "application/octet-stream");
     }
 
