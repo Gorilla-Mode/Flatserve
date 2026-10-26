@@ -1,6 +1,9 @@
 using System.Buffers.Binary;
 using FlatGeobuf;
 using FlatGeobuf.Index;
+using FlatGeobuf.NTS;
+using Flatserve.Index;
+using Google.FlatBuffers;
 using NetTopologySuite.Geometries;
 
 namespace Flatserve.Fgb;
@@ -11,6 +14,7 @@ public record FgbDataset
     public readonly List<FgbFeaturePtr> FeaturePtrs = new List<FgbFeaturePtr>();
     private readonly byte[] _spatialIndex = [];
     private readonly HeaderT _header;
+    private readonly Dictionary<string, HashIndex> _textIndexes = new Dictionary<string, HashIndex>();
 
     public FgbDataset(string filePath)
     {
@@ -37,6 +41,7 @@ public record FgbDataset
         using var featureStream = new MemoryStream(_data, false);
         using var featureReader = new BinaryReader(featureStream);
         FeaturePtrs = GetFeaturePtrs(featureStream, featureReader);
+        BuildTextIndex("brannvesen"); //TODO: make dynamic based on user input or configuration
     }
 
     public Byte[] GetBytes(Envelope bbox)
@@ -64,7 +69,6 @@ public record FgbDataset
         foreach (var intersect in intersects)
         {
             int offset = checked((int)intersect.Offset);
-
             int length = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(
                 _data.AsSpan(offset, 4)));
 
@@ -77,6 +81,25 @@ public record FgbDataset
     public Byte[] GetFeatureBytes(FgbFeaturePtr featurePtr)
     {
         return _data.AsSpan((int)featurePtr.Offset, (int)featurePtr.Length).ToArray();
+    }
+
+    public Byte[] FilterTextAttribute(string attribute, string value)
+    {
+        var features = _textIndexes.TryGetValue(attribute, out var index)
+            ? index.Get(value)
+            : Array.Empty<FgbFeaturePtr>();
+        
+        using var output = new MemoryStream();
+
+        foreach (var feature in features)
+        {
+            int offset = checked((int)feature.Offset);
+            int length = checked((int)feature.Length);
+
+            output.Write(_data.AsSpan(offset - 4, checked(length + 4)));
+        }
+
+        return output.ToArray();
     }
 
     private List<FgbFeaturePtr> GetFeaturePtrs(MemoryStream stream, BinaryReader reader)
@@ -97,4 +120,39 @@ public record FgbDataset
         
         return fgbFeaturePtrs;
     }
+
+    private void AddToTextIndex(string attribute, string value, FgbFeaturePtr featurePtr)
+    {
+        if (!_textIndexes.TryGetValue(attribute, out var index))
+        {
+            index = new HashIndex();
+            _textIndexes.Add(attribute, index);
+        }
+
+        index.Add(value, featurePtr);
+    }
+
+    private void BuildTextIndex(string attribute)
+    {
+        var sequenceFactory = new FlatGeobufCoordinateSequenceFactory();
+        var factory = new GeometryFactory(sequenceFactory);
+        
+        foreach (var pointer in FeaturePtrs)
+        {
+            var feature = FeatureConversions.FromByteBuffer(factory,
+                sequenceFactory,
+                new ByteBuffer(GetFeatureBytes(pointer)),
+                _header);
+
+            var attributes = feature.Attributes;
+            
+            if (attributes is not null &&
+                attributes.Exists(attribute) &&
+                attributes[attribute] is string value)
+            {
+                AddToTextIndex(attribute, value, pointer);
+            }
+        }
+    }
+    
 }
