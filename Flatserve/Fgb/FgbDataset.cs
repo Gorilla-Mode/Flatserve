@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using FlatGeobuf;
 using FlatGeobuf.Index;
+using Flatserve.Index;
 using NetTopologySuite.Geometries;
 
 namespace Flatserve.Fgb;
@@ -11,6 +12,7 @@ public record FgbDataset
     public readonly List<FgbFeaturePtr> FeaturePtrs = new List<FgbFeaturePtr>();
     private readonly byte[] _spatialIndex = [];
     private readonly HeaderT _header;
+    private readonly Dictionary<string, HashIndex> _textIndexes = new Dictionary<string, HashIndex>();
 
     public FgbDataset(string filePath)
     {
