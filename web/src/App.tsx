@@ -5,7 +5,7 @@ import type { GeoJSONSource } from 'maplibre-gl';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import type { Feature, FeatureCollection } from 'geojson';
 import { errorMessage, normalizeApiUrl } from './api';
-import { viewportBounds } from './bounds';
+import { insetBounds, viewportBounds } from './bounds';
 import { DatasetSession } from './session';
 
 setWorkerUrl(workerUrl);
@@ -22,13 +22,14 @@ export function App() {
   const [connectionOpen, setConnectionOpen] = useState(true);
   const [filterOpen, setFilterOpen] = useState(false);
   const [selection, setSelection] = useState('');
+  const [bboxEnabled, setBboxEnabled] = useState(false);
+  const bboxActive = bboxEnabled && selection === '';
   const [values, setValues] = useState<string[]>([]);
   const [count, setCount] = useState(0);
   const [status, setStatus] = useState({ loading: false, error: null as string | null });
   const [discovery, setDiscovery] = useState({ loading: false, error: null as string | null });
 
   useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
     let instance: MapLibreMap;
     try {
       instance = new MapLibreMap({
@@ -47,6 +48,11 @@ export function App() {
     instance.addControl(new NavigationControl(), 'bottom-right');
     instance.on('error', (event) => setMapError(`Basemap: ${event.error.message}`));
     instance.on('load', () => {
+      instance.addSource('query-bbox', { type: 'geojson', data: collection([]) });
+      instance.addLayer({
+        id: 'query-bbox', type: 'line', source: 'query-bbox',
+        paint: { 'line-color': '#16a34a', 'line-width': 3 },
+      });
       instance.addSource('stations', { type: 'geojson', data: collection(featuresRef.current) });
       instance.addLayer({
         id: 'stations', type: 'circle', source: 'stations',
@@ -59,21 +65,7 @@ export function App() {
       });
       setMapReady(true);
     });
-    instance.on('movestart', () => {
-      clearTimeout(timer);
-      session.current?.cancelViewport();
-    });
-    instance.on('moveend', () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        const bounds = instance.getBounds();
-        void session.current?.setBounds(viewportBounds(
-          bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth(),
-        ));
-      }, 250);
-    });
     return () => {
-      clearTimeout(timer);
       instance.remove();
       map.current = null;
     };
@@ -112,11 +104,45 @@ export function App() {
 
   useEffect(() => {
     if (!connection || !mapReady || !map.current) return;
-    const bounds = map.current.getBounds();
-    void session.current?.setBounds(viewportBounds(
-      bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth(),
-    ));
-  }, [connection, mapReady]);
+    const instance = map.current;
+    const current = session.current!;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const updateArea = () => {
+      const canvas = instance.getCanvas();
+      const inset = bboxActive ? insetBounds(instance, canvas.clientWidth, canvas.clientHeight) : null;
+      (instance.getSource('query-bbox') as GeoJSONSource).setData(collection(inset ? [inset.outline] : []));
+      const bounds = instance.getBounds();
+      return inset?.bounds ?? viewportBounds(
+        bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth(),
+      );
+    };
+    let bounds = updateArea();
+    // Set the selection and its current bounds together when returning from a text filter.
+    void current.setFilter(selection, bounds);
+    const cancel = () => {
+      clearTimeout(timer);
+      current.cancelViewport();
+    };
+    const move = () => { bounds = updateArea(); };
+    const schedule = () => {
+      cancel();
+      bounds = updateArea();
+      timer = setTimeout(() => { void current.setBounds(bounds); }, 250);
+    };
+    instance.on('movestart', cancel);
+    instance.on('move', move);
+    instance.on('moveend', schedule);
+    instance.on('resize', schedule);
+    return () => {
+      cancel();
+      instance.off('movestart', cancel);
+      instance.off('move', move);
+      instance.off('moveend', schedule);
+      instance.off('resize', schedule);
+    };
+  }, [connection, mapReady, bboxActive, selection]);
+
+  const countLabel = `${count.toLocaleString()} features${bboxActive ? ' in bbox' : ''}`;
 
   return (
     <main>
@@ -127,13 +153,14 @@ export function App() {
           <button onClick={() => setConnectionOpen(true)}>Connection</button>
           <button disabled={!connection} aria-expanded={filterOpen} aria-controls="filter-panel"
             onClick={() => setFilterOpen(!filterOpen)}>Filter{selection ? ' •' : ''}</button>
+          <button disabled={!connection || !mapReady || selection !== ''} aria-pressed={bboxActive}
+            onClick={() => setBboxEnabled(!bboxEnabled)}>BBox</button>
         </div>
         {connection && <small className="api-url" title={connection.url}>{connection.url}</small>}
         {filterOpen && <div id="filter-panel" className="filter-panel">
           <label htmlFor="brannvesen">Brannvesen</label>
           <select id="brannvesen" value={selection} onChange={(event) => {
             setSelection(event.target.value);
-            void session.current?.setFilter(event.target.value);
           }}>
             <option value="">All brannvesen</option>
             {values.map((value) => <option key={value} value={value}>{value}</option>)}
@@ -145,8 +172,9 @@ export function App() {
         </div>}
         <div className="status" role="status" aria-live="polite">
           {!connection ? 'Connect to an API to view fire stations.'
-            : status.loading ? `Loading… ${count.toLocaleString()} features`
-            : status.error ? `${count.toLocaleString()} features loaded`
+            : status.loading ? `Loading… ${countLabel}`
+            : status.error ? `${countLabel} loaded`
+            : bboxActive ? countLabel
             : count === 0 ? 'No features found.'
             : `${count.toLocaleString()} features${selection ? ' matching filter' : ' in view'}`}
         </div>

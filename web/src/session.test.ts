@@ -85,6 +85,19 @@ describe('connection sessions', () => {
     calls[0].resolve([station('Oslo')]);
     await query;
   });
+  it('restores the latest bbox atomically when leaving a text filter', async () => {
+    const observer = observers();
+    const read = vi.fn(async (_url: URL) => [station('Oslo')]);
+    const session = new DatasetSession('https://example.org', observer, read);
+    await session.setBounds([WORLD]);
+    await session.setFilter('Oslo');
+    const before = read.mock.calls.length;
+    const bbox = { minX: 7, minY: 58, maxX: 9, maxY: 60 };
+    await session.setFilter('', [bbox]);
+    expect(read).toHaveBeenCalledTimes(before + 1);
+    expect(Object.fromEntries(read.mock.lastCall![0].searchParams)).toEqual({ minX: '7', minY: '58', maxX: '9', maxY: '60' });
+    expect(observer.onStatus.mock.lastCall?.[0].loading).toBe(false);
+  });
   it('combines batches from both halves of an antimeridian viewport', async () => {
     const observer = observers();
     const read = vi.fn(async (url: URL, options: DecodeOptions) => {

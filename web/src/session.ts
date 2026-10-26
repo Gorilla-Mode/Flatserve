@@ -58,8 +58,9 @@ export class DatasetSession {
     return this.selection === '' ? this.refresh() : Promise.resolve();
   }
 
-  setFilter(selection: string): Promise<void> {
+  setFilter(selection: string, bounds = this.bounds): Promise<void> {
     this.selection = selection;
+    this.bounds = bounds;
     return this.refresh();
   }
 

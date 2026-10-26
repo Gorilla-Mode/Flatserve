@@ -1,5 +1,65 @@
 import { describe, expect, it } from 'vitest';
-import { viewportBounds } from './bounds';
+import { insetBounds, viewportBounds } from './bounds';
+
+function projection(longitude = 10, bearing = 0, pitch = 0) {
+  const cos = Math.cos(bearing);
+  const sin = Math.sin(bearing);
+  return {
+    project([lng, lat]: [number, number]) {
+      const dx = (lng - longitude) * 10;
+      const dy = -lat * 10;
+      const x = dx * cos - dy * sin;
+      const y = dx * sin + dy * cos;
+      const perspective = 1 + y * pitch / 1000;
+      return { x: 500 + x / perspective, y: 300 + y / perspective };
+    },
+    unproject([x, y]: [number, number]) {
+      const perspective = 1 - (y - 300) * pitch / 1000;
+      const dx = (x - 500) / perspective;
+      const dy = (y - 300) / perspective;
+      return { lng: longitude + (dx * cos + dy * sin) / 10, lat: -(-dx * sin + dy * cos) / 10 };
+    },
+  };
+}
+
+describe('inset query rectangle', () => {
+  it('leaves a 20% margin and uses the exact outline coordinates for requests', () => {
+    const { bounds, outline } = insetBounds(projection(), 1000, 600);
+    expect(bounds).toHaveLength(1);
+    expect(bounds[0].minX).toBeCloseTo(-20);
+    expect(bounds[0].maxX).toBeCloseTo(40);
+    expect(bounds[0].minY).toBeCloseTo(-18);
+    expect(bounds[0].maxY).toBeCloseTo(18);
+    const [sw, , ne] = outline.geometry.coordinates;
+    expect(bounds).toEqual(viewportBounds(sw[0], sw[1], ne[0], ne[1]));
+    expect(outline.geometry.coordinates[4]).toEqual(sw);
+  });
+  it.each([0, Math.PI / 6, Math.PI / 4, Math.PI / 2, Math.PI])(
+    'keeps every corner within the inset at bearing %s with perspective', (bearing) => {
+      const map = projection(10, bearing, 0.8);
+      const { outline } = insetBounds(map, 1000, 600);
+      for (const coordinate of outline.geometry.coordinates) {
+        const { x, y } = map.project(coordinate as [number, number]);
+        expect(x).toBeGreaterThanOrEqual(200);
+        expect(x).toBeLessThanOrEqual(800);
+        expect(y).toBeGreaterThanOrEqual(120);
+        expect(y).toBeLessThanOrEqual(480);
+      }
+      expect(outline.geometry.coordinates[2][0] - outline.geometry.coordinates[0][0]).toBeGreaterThan(10);
+    },
+  );
+  it.each([179, -181, 539])('splits queries at longitude %s while drawing a continuous outline', (longitude) => {
+    const { bounds, outline } = insetBounds(projection(longitude), 1000, 600);
+    expect(bounds).toHaveLength(2);
+    expect(bounds[0].maxX).toBe(180);
+    expect(bounds[1].minX).toBe(-180);
+    expect(bounds[0].minX).toBeCloseTo(149);
+    expect(bounds[1].maxX).toBeCloseTo(-151);
+    const [sw, se, ne] = outline.geometry.coordinates;
+    expect(se[0] - sw[0]).toBeCloseTo(60);
+    expect(bounds).toEqual(viewportBounds(sw[0], sw[1], ne[0], ne[1]));
+  });
+});
 
 describe('camera bounds', () => {
   it('keeps Norway bounds and normalizes a repeated world', () => {
