@@ -1,0 +1,27 @@
+:root { font-family: system-ui, sans-serif; color: #242424; background: #dce6ed; font-size: 14px; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input, select { font: inherit; }
+button { cursor: pointer; padding: .35rem .65rem; }
+button:disabled { cursor: default; }
+button, input, select { border: 1px solid #aaa; border-radius: 4px; background: #fff; color: inherit; }
+button:hover:not(:disabled) { background: #f0f0f0; }
+:focus-visible { outline: 2px solid #235ca5; outline-offset: 2px; }
+.map { position: fixed; inset: 0; }
+.controls { position: absolute; top: 12px; left: 12px; width: min(340px, calc(100% - 24px)); background: #fffffff2; border: 1px solid #ccc; border-radius: 5px; padding: 10px; box-shadow: 0 1px 5px #0002; }
+.toolbar { display: flex; align-items: center; gap: 8px; }
+.toolbar strong { flex: 1; font-size: 16px; }
+.api-url { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 7px; color: #555; }
+.status { margin-top: 9px; }
+.filter-panel { display: grid; gap: 6px; margin-top: 12px; }
+select { width: 100%; padding: 6px; }
+.error { color: #92251d; overflow-wrap: anywhere; margin-top: 8px; }
+dialog { width: min(420px, calc(100% - 32px)); padding: 24px; color: inherit; border: 1px solid #aaa; border-radius: 6px; box-shadow: 0 10px 40px #0003; }
+dialog::backdrop { background: #12202f66; }
+h1 { font-size: 21px; margin: 0 0 10px; }
+dialog p { line-height: 1.5; margin: 0 0 18px; }
+dialog label { display: block; margin-bottom: 6px; }
+dialog input { width: 100%; padding: 9px; }
+dialog .error { margin: 8px 0; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+@media (max-width: 480px) { .controls { top: 8px; left: 8px; width: calc(100% - 16px); } dialog { padding: 20px; } }
