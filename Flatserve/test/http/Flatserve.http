@@ -2,28 +2,28 @@
 
 ### All features
 GET {{Flatserve_HostAddress}}/fgb/collection?minX=4&minY=58&maxX=32&maxY=72
-Accept: application/octet-stream
+Accept: application/vnd.fgb
 
 ### Kristiansand centre
 GET {{Flatserve_HostAddress}}/fgb/collection?minX=7.95&minY=58.10&maxX=8.08&maxY=58.20
-Accept: application/octet-stream
+Accept: application/vnd.fgb
 
 ### Greater Kristiansand
 GET {{Flatserve_HostAddress}}/fgb/collection?minX=7.75&minY=58.0&maxX=8.30&maxY=58.35
-Accept: application/octet-stream
+Accept: application/vnd.fgb
 
 ### Oslo
 GET {{Flatserve_HostAddress}}/fgb/collection?minX=10.5&minY=59.8&maxX=10.95&maxY=60.05
-Accept: application/octet-stream
+Accept: application/vnd.fgb
 
 ### Single feature
 GET {{Flatserve_HostAddress}}/fgb/feature/0
-Accept: application/octet-stream
+Accept: application/vnd.fgb
 
 ### Filter by Brannvesen oslo
 GET {{Flatserve_HostAddress}}/fgb/filter?value=Oslo%20brann-%20og%20redningsetat&attribute=brannvesen
-Accept: application/octet-stream
+Accept: application/vnd.fgb
 
 ### Filter by Brannvesen kristiansand
 GET {{Flatserve_HostAddress}}/fgb/filter?value=Kristiansandsregionen%20BR&attribute=brannvesen
-Accept: application/octet-stream
+Accept: application/vnd.fgb
