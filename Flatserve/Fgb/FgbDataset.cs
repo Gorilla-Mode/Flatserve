@@ -10,12 +10,14 @@ namespace Flatserve.Fgb;
 
 public record FgbDataset
 {
-    private readonly byte[] _data;
     public readonly List<FgbFeaturePtr> FeaturePtrs = new List<FgbFeaturePtr>();
+    
+    private readonly byte[] _data;
     private readonly byte[] _spatialIndex = [];
     private readonly HeaderT _header;
-    private byte[] _exportHeader;
     private readonly Dictionary<string, HashIndex> _textIndexes = new Dictionary<string, HashIndex>();
+    private byte[] _exportHeader = [];
+   
 
     public FgbDataset(string filePath)
     {
@@ -91,11 +93,16 @@ public record FgbDataset
         
         foreach (var intersect in intersects)
         {
-            int offset = checked((int)intersect.Offset);
-            int length = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(
-                _data.AsSpan(offset, 4)));
+            ulong payloadLength = BinaryPrimitives.ReadUInt32LittleEndian(
+                _data.AsSpan(
+                    checked((int)intersect.Offset),
+                    FgbFeaturePtr.LengthPrefix));
 
-            output.Write(_data.AsSpan(offset, checked(4 + length)));
+            var pointer = new FgbFeaturePtr(
+                intersect.Offset,
+                checked(payloadLength + FgbFeaturePtr.LengthPrefix));
+
+            WriteFeature(output, pointer);
         }
                 
         return output.ToArray();
@@ -104,16 +111,22 @@ public record FgbDataset
     public Byte[] GetFeatureBytes(FgbFeaturePtr featurePtr)
     {
         using var output = new MemoryStream();
+        
         output.Write(_exportHeader);
         WriteFeature(output, featurePtr);
+        
         return output.ToArray();
     }
 
     private byte[] GetRawFeatureBytes(FgbFeaturePtr featurePtr) =>
-        _data.AsSpan(checked((int)featurePtr.Offset), checked((int)featurePtr.Length)).ToArray();
+        _data.AsSpan(
+            checked((int)featurePtr.PayloadOffset),
+            checked((int)featurePtr.PayloadLength)).ToArray(); 
 
     private void WriteFeature(Stream output, FgbFeaturePtr featurePtr) =>
-        output.Write(_data.AsSpan(checked((int)featurePtr.Offset - 4), checked((int)featurePtr.Length + 4)));
+        output.Write(_data.AsSpan(
+            checked((int)featurePtr.Offset),
+            checked((int)featurePtr.Length)));
 
     public Byte[] FilterTextAttribute(string attribute, string value)
     {
@@ -138,14 +151,15 @@ public record FgbDataset
         
         while (stream.Position < stream.Length)
         {
-            ulong featureLen = reader.ReadUInt32();
             ulong offset = Convert.ToUInt64(stream.Position);
+            ulong payloadLength = reader.ReadUInt32();
 
-            FgbFeaturePtr featurePtr = new(offset, featureLen);
-            
-            fgbFeaturePtrs.Add(featurePtr);
-                                                                                                   
-            stream.Position += Convert.ToInt64(featureLen);
+            fgbFeaturePtrs.Add(new FgbFeaturePtr(
+                offset,
+                checked(payloadLength + FgbFeaturePtr.LengthPrefix)));
+
+            stream.Position += Convert.ToInt64(payloadLength);
+
         }
         
         return fgbFeaturePtrs;
@@ -184,5 +198,4 @@ public record FgbDataset
             }
         }
     }
-    
 }
