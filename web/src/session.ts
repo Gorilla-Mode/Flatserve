@@ -1,8 +1,9 @@
 import type { Feature } from 'geojson';
 import { collectionUrl, errorMessage, fetchFeatures, filterUrl } from './api';
 import type { HeaderMeta, RequestTiming } from './api';
-import { containsBounds, containsPoint, expandBounds, WORLD } from './bounds';
+import { containsBounds, expandBounds, WORLD } from './bounds';
 import type { Bounds } from './bounds';
+import { geometryIntersectsBounds } from './geometry';
 
 interface Observer {
   onFeatures: (features: Feature[]) => void;
@@ -105,7 +106,7 @@ export class DatasetSession {
   /** Publish only a changed visible subset; movement never changes filter matches. */
   private publish(): void {
     const visible = this.selection ? this.features : this.features.filter((feature) =>
-      feature.geometry?.type === 'Point' && containsPoint(this.bounds, feature.geometry.coordinates));
+      geometryIntersectsBounds(feature.geometry, this.bounds));
     const signature = JSON.stringify(visible);
     if (signature === this.displayed) return;
     this.displayed = signature;

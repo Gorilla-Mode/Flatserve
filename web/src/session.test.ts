@@ -23,6 +23,41 @@ function norwaySession(...args: ConstructorParameters<typeof DatasetSession>) {
 
 const area = (west = 0, east = 10) => viewportBounds(west, 50, east, 60);
 
+describe('geometry-aware session publishing', () => {
+  it('reuses buffered geometries and counts original multipart and collection features once', async () => {
+    const features: Feature[] = [
+      station('point', 1),
+      { type: 'Feature', properties: {}, geometry: { type: 'MultiPoint', coordinates: [[1, 55], [20, 55]] } },
+      { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [[-1, 55], [11, 55]] } },
+      { type: 'Feature', properties: {}, geometry: { type: 'MultiLineString', coordinates: [[[3, 54], [7, 56]], [[20, 54], [25, 56]]] } },
+      { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[4, 52], [8, 52], [8, 56], [4, 56], [4, 52]]] } },
+      { type: 'Feature', properties: {}, geometry: { type: 'MultiPolygon', coordinates: [[[[4, 52], [8, 52], [8, 56], [4, 52]]]] } },
+      { type: 'Feature', properties: {}, geometry: { type: 'GeometryCollection', geometries: [
+        { type: 'Point', coordinates: [9, 55] }, { type: 'LineString', coordinates: [[8, 52], [9, 53]] },
+      ] } },
+    ];
+    const invisible: Feature[] = [station('outside', 30),
+      { type: 'Feature', properties: {}, geometry: { type: 'GeometryCollection', geometries: [] } }];
+    const observer = observers();
+    const read = vi.fn().mockResolvedValue([...features, ...invisible]);
+    const session = norwaySession('https://example.org', observer, read);
+    await session.setBounds(area());
+    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual(features);
+    await session.setBounds(area(2, 12));
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual(features.slice(2));
+    expect(observer.onFeatures.mock.lastCall?.[0].at(-1)).toBe(features.at(-1));
+    await session.setBounds(area());
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual(features);
+    await session.setFilter('all');
+    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([...features, ...invisible]);
+    await session.setBounds(area(50, 60));
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([...features, ...invisible]);
+  });
+});
+
 describe('session timings', () => {
   const timing = (url: URL): RequestTiming => ({ url: url.href, httpMs: 10, downloadDecodeMs: 20, totalMs: 30 });
 

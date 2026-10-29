@@ -82,7 +82,7 @@ test('keyboard toggle below the user, cached rendering, camera and settings pres
   await expect.poll(async () => (await mapPixels(page))[0]).toBeGreaterThan(20);
   const shown = await mapPixels(page);
   expect(shown[1]).toBeGreaterThan(20); // 12% cyan fill on the dark basemap.
-  expect(shown.slice(2)).toEqual(before.slice(2)); // BBox, buffer and stations remain above the area.
+  expect(shown.slice(2, 4)).toEqual(before.slice(2, 4)); // BBox and buffer remain above the area.
   expect(requests).toHaveLength(requestCount + 1);
   expect(requests.at(-1)!.pathname).toBe('/fgb/auth-polygon/0');
   await expect(page.locator('.timings-point')).toHaveCount(timingCount);

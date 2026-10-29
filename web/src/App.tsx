@@ -78,6 +78,27 @@ export function App() {
     instance.addControl(new NavigationControl(), 'bottom-right');
     instance.on('error', (event) => setMapError(`Basemap: ${event.error.message}`));
     instance.on('load', () => {
+      instance.addSource('stations', { type: 'geojson', data: collection(featuresRef.current) });
+      instance.addLayer({
+        id: 'dataset-polygons', type: 'fill', source: 'stations',
+        filter: ['==', ['geometry-type'], 'Polygon'],
+        paint: { 'fill-color': '#bb342a', 'fill-opacity': 0.18 },
+      });
+      instance.addLayer({
+        id: 'dataset-lines', type: 'line', source: 'stations',
+        filter: ['==', ['geometry-type'], 'LineString'],
+        paint: { 'line-color': '#bb342a', 'line-width': 2 },
+      });
+      instance.addLayer({
+        id: 'stations', type: 'circle', source: 'stations',
+        filter: ['==', ['geometry-type'], 'Point'],
+        paint: {
+          'circle-radius': 5,
+          'circle-color': '#bb342a',
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': 1.5,
+        },
+      });
       instance.addSource('authorized-area', { type: 'geojson', data: collection([]) });
       instance.addLayer({
         id: 'authorized-area-fill', type: 'fill', source: 'authorized-area',
@@ -96,16 +117,6 @@ export function App() {
       instance.addLayer({
         id: 'fetched-buffer', type: 'line', source: 'fetched-buffer',
         paint: { 'line-color': bufferColor, 'line-width': 3 },
-      });
-      instance.addSource('stations', { type: 'geojson', data: collection(featuresRef.current) });
-      instance.addLayer({
-        id: 'stations', type: 'circle', source: 'stations',
-        paint: {
-          'circle-radius': 5,
-          'circle-color': '#bb342a',
-          'circle-stroke-color': '#ffffff',
-          'circle-stroke-width': 1.5,
-        },
       });
       setMapReady(true);
     });
