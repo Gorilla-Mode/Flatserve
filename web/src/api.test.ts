@@ -1,12 +1,26 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { collectionUrl, decodeResponse, fetchFeatures, filterUrl, normalizeApiUrl } from './api';
+import { collectionUrl, decodeResponse, fetchFeatures, filterUrl, httpDuration, normalizeApiUrl } from './api';
 import { WORLD } from './bounds';
 import { chunked, encoded, headerOnly } from '../tests/fixtures';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+describe('fetch options', () => {
+  it.each([undefined, 'no-store'] as const)('forwards cache mode %s without changing the URL', async (cache) => {
+    const fetchMock = vi.fn(async () => chunked(encoded()));
+    vi.stubGlobal('fetch', fetchMock);
+    const signal = new AbortController().signal;
+    const url = filterUrl('https://example.org', 'Oslo');
+    await fetchFeatures(url, { signal, cache });
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(url, {
+      signal, cache, credentials: 'omit', headers: { Accept: 'application/octet-stream' },
+    });
+    expect([...url.searchParams.keys()]).toEqual(['attribute', 'value']);
+  });
+});
+
 describe('request timing', () => {
-  it.each([false, true])('measures headers separately from streaming body completion (empty: %s)', async (empty) => {
+  it.each([[false, 0], [true, 0], [false, 500]] as const)('uses network timestamps independently of decoding delays (empty: %s, delay: %s)', async (empty, delay) => {
     let clock = 100;
     vi.spyOn(performance, 'now').mockImplementation(() => clock);
     let headers!: (response: Response) => void;
@@ -16,7 +30,12 @@ describe('request timing', () => {
     const onTiming = vi.fn();
     const onHeader = vi.fn();
     const url = filterUrl('https://example.org/proxy', 'Sør & Øst');
-    const result = fetchFeatures(url, { signal: new AbortController().signal, onTiming, onHeader });
+    vi.spyOn(performance, 'getEntriesByName').mockImplementation(() => {
+      clock += 1000; // Timing lookup must not inflate browser total.
+      return [resource(url.href, 110, 210)];
+    }).mockReturnValueOnce([]);
+    const result = fetchFeatures(url, { signal: new AbortController().signal, onTiming, onHeader,
+      onBatch: () => { clock += delay; } });
     clock = 125;
     headers(response);
     await vi.waitFor(() => expect(response.body?.locked).toBe(true));
@@ -27,7 +46,7 @@ describe('request timing', () => {
     clock = 245;
     body.close();
     expect(await result).toHaveLength(empty ? 0 : 3);
-    expect(onTiming).toHaveBeenCalledExactlyOnceWith({ url: url.href, requestMs: 25, parseMs: 120, totalMs: 145 });
+    expect(onTiming).toHaveBeenCalledExactlyOnceWith({ url: url.href, httpMs: 100, downloadDecodeMs: 120 + delay, totalMs: 145 + delay });
   });
 
   it.each(['http', 'decode', 'network', 'abort-fetch', 'abort-body', 'already-aborted'])(
@@ -126,5 +145,57 @@ describe('progressive FlatGeobuf decoding', () => {
     await expect(decodeResponse(new Response('this is not FlatGeobuf'), {
       signal: new AbortController().signal,
     })).rejects.toThrow();
+  });
+});
+
+function resource(name: string, startTime: number, responseEnd: number, initiatorType = 'fetch'): PerformanceResourceTiming {
+  return { name, entryType: 'resource', startTime, responseEnd, initiatorType,
+    requestStart: 0, responseStart: 0, connectStart: 0, domainLookupStart: 0,
+  } as PerformanceResourceTiming;
+}
+
+describe('HTTP Resource Timing attribution', () => {
+  const url = 'https://cross-origin.example/fgb/filter?value=A';
+  it('uses start and end even when cross-origin detailed fields are restricted', () => {
+    expect(httpDuration([resource(url, 110, 210)], url, 100, 245)).toBe(100);
+  });
+  it('excludes entries already present even when timestamps have been rounded', () => {
+    const old = resource(url, 100, 120);
+    expect(httpDuration([old], url, 100, 245, new Set([old]))).toBeNull();
+    expect(httpDuration([old, resource(url, 100, 210)], url, 100, 245, new Set([old]))).toBe(110);
+  });
+  it('excludes earlier entries for repeated URLs and other URLs or initiators', () => {
+    expect(httpDuration([resource(url, 10, 90), resource(url, 110, 210),
+      resource(url + 'B', 120, 220), resource(url, 120, 220, 'xmlhttprequest')], url, 100, 245)).toBe(100);
+  });
+  it.each([[], [resource(url, 10, 90)], [resource(url, 110, 210), resource(url, 120, 220)],
+    [resource(url, 110, 0)], [resource(url, 110, 110)], [resource(url, 110, 109)],
+    [resource(url, 110, Infinity)], [resource(url, NaN, 210)], [resource(url, 110, 246)]].map((entries) => ({ entries })))(
+    'returns unavailable for missing, ambiguous or invalid entries (%j)', ({ entries }) => {
+      expect(httpDuration(entries, url, 100, 245)).toBeNull();
+    },
+  );
+  it('marks both overlapping same-URL calls unavailable even when only one entry is complete', async () => {
+    let clock = 100;
+    vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    vi.spyOn(performance, 'getEntriesByName').mockReturnValue([resource(url, 110, 210)]);
+    const releases: ((response: Response) => void)[] = [];
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => releases.push(resolve))));
+    const onTiming = vi.fn();
+    const first = fetchFeatures(new URL(url), { signal: new AbortController().signal, onTiming });
+    clock = 120;
+    const second = fetchFeatures(new URL(url), { signal: new AbortController().signal, onTiming });
+    clock = 245;
+    releases[0](chunked(encoded()));
+    await first;
+    releases[1](chunked(encoded()));
+    await second;
+    expect(onTiming.mock.calls.map(([timing]) => timing.httpMs)).toEqual([null, null]);
+    // A later request can be attributed normally after overlapping calls finish.
+    clock = 300;
+    vi.stubGlobal('fetch', vi.fn(async () => { clock = 400; return chunked(encoded()); }));
+    vi.spyOn(performance, 'getEntriesByName').mockReturnValue([resource(url, 310, 390)]).mockReturnValueOnce([]);
+    await fetchFeatures(new URL(url), { signal: new AbortController().signal, onTiming });
+    expect(onTiming.mock.lastCall?.[0].httpMs).toBe(80);
   });
 });

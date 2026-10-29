@@ -1,6 +1,6 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import { Map as MapLibreMap, NavigationControl, setWorkerUrl } from 'maplibre-gl';
+import { Map as MapLibreMap, Marker, NavigationControl, setWorkerUrl } from 'maplibre-gl';
 import type { GeoJSONSource } from 'maplibre-gl';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import type { Feature, FeatureCollection } from 'geojson';
@@ -12,6 +12,18 @@ import { timingHistory } from './timings';
 import { RequestTimings } from './RequestTimings';
 
 setWorkerUrl(workerUrl);
+const viewportColor = '#16a34a';
+const bufferColor = '#ef4444';
+
+function bboxLabel(map: MapLibreMap, text: string, color: string, position: [number, number]): Marker {
+  const element = document.createElement('div');
+  element.className = 'bbox-label';
+  element.textContent = text;
+  element.style.color = color;
+  return new Marker({ element, anchor: 'bottom-left', offset: [0, -6] })
+    .setLngLat(position).addTo(map);
+}
+
 const collection = (features: Feature[]): FeatureCollection => ({ type: 'FeatureCollection', features });
 
 export function App() {
@@ -60,12 +72,12 @@ export function App() {
       instance.addSource('query-bbox', { type: 'geojson', data: collection([]) });
       instance.addLayer({
         id: 'query-bbox', type: 'line', source: 'query-bbox',
-        paint: { 'line-color': '#16a34a', 'line-width': 3 },
+        paint: { 'line-color': viewportColor, 'line-width': 3 },
       });
       instance.addSource('fetched-buffer', { type: 'geojson', data: collection([]) });
       instance.addLayer({
         id: 'fetched-buffer', type: 'line', source: 'fetched-buffer',
-        paint: { 'line-color': '#ef4444', 'line-width': 3 },
+        paint: { 'line-color': bufferColor, 'line-width': 3 },
       });
       instance.addSource('stations', { type: 'geojson', data: collection(featuresRef.current) });
       instance.addLayer({
@@ -125,6 +137,9 @@ export function App() {
     const outline = showBuffer && canShowBuffer && coverage ? coverageOutline(coverage) : undefined;
     (map.current?.getSource('fetched-buffer') as GeoJSONSource | undefined)
       ?.setData(collection(outline ? [outline] : []));
+    if (!outline || !map.current || !coverage?.length) return;
+    const label = bboxLabel(map.current, 'Buffer bbox', bufferColor, [coverage[0].minX, coverage[0].maxY]);
+    return () => { label.remove(); };
   }, [mapReady, showBuffer, canShowBuffer, coverage]);
 
   useEffect(() => {
@@ -132,10 +147,16 @@ export function App() {
     const instance = map.current;
     const current = session.current!;
     let frame: number | undefined;
+    let label: Marker | undefined;
     const updateArea = () => {
       const canvas = instance.getCanvas();
       const inset = bboxActive ? insetBounds(instance, canvas.clientWidth, canvas.clientHeight) : null;
       (instance.getSource('query-bbox') as GeoJSONSource).setData(collection(inset ? [inset.outline] : []));
+      if (inset) {
+        const corner = inset.outline.geometry.coordinates[3] as [number, number];
+        label ??= bboxLabel(instance, 'Viewport bbox', viewportColor, corner);
+        label.setLngLat(corner);
+      }
       const bounds = instance.getBounds();
       return inset?.bounds ?? viewportBounds(
         bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth(),
@@ -162,6 +183,7 @@ export function App() {
       instance.off('move', schedule);
       instance.off('moveend', finish);
       instance.off('resize', schedule);
+      label?.remove();
     };
   }, [connection, mapReady, bboxActive, selection, bufferEnabled]);
 

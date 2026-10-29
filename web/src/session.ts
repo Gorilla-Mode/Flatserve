@@ -20,9 +20,8 @@ export function distinctBrannvesen(features: Feature[]): string[] {
     .sort((a, b) => a.localeCompare(b, 'nb'));
 }
 
-/** One connection's cache and request lifetimes; no stale request may publish data. */
+/** One connection's coverage and request lifetimes; no stale request may publish data. */
 export class DatasetSession {
-  private readonly cache = new Map<string, Feature[]>();
   private viewRequest?: AbortController;
   private discoveryRequest?: AbortController;
   private generation = 0;
@@ -109,13 +108,6 @@ export class DatasetSession {
     // Movement only updates the desired bounds while one logical request is active.
     if (this.viewRequest) return this.pending!;
     const selection = this.selection;
-    const cached = selection ? this.cache.get(selection) : undefined;
-    if (cached) {
-      this.features = cached;
-      this.publish();
-      this.observer.onStatus({ loading: false, error: null });
-      return Promise.resolve();
-    }
     if (!selection && this.coverage && containsBounds(this.coverage, this.bounds)) {
       this.observer.onStatus({ loading: false, error: null });
       return Promise.resolve();
@@ -141,13 +133,13 @@ export class DatasetSession {
       for (const url of urls) {
         const part = await this.read(url, {
           signal: request.signal,
+          cache: selection ? 'no-store' : undefined,
           onTiming: (timing) => { if (current()) this.observer.onTiming?.(timing); },
         });
         if (!current()) return;
         features.push(...part);
       }
-      if (selection) this.cache.set(selection, features);
-      else {
+      if (!selection) {
         this.coverage = requestBounds;
         this.observer.onCoverage?.(requestBounds);
       }
@@ -174,6 +166,5 @@ export class DatasetSession {
     this.coverage = undefined;
     this.observer.onCoverage?.(undefined);
     this.discoveryRequest?.abort();
-    this.cache.clear();
   }
 }

@@ -55,6 +55,7 @@ button:hover:not(:disabled) { background: var(--hover); }
 .timings-line { fill: none; stroke: var(--green); stroke-width: 2; }
 .timings-point { cursor: pointer; }
 .timings-hit { fill: transparent; }
+.timings-unavailable { stroke: var(--green); stroke-width: 2; fill: none; pointer-events: none; }
 .timings-marker { fill: var(--green); stroke: var(--field); stroke-width: 1.5; pointer-events: none; }
 .timings-point:focus-visible { outline: none; }
 .timings-point:focus-visible .timings-hit { stroke: var(--green); stroke-width: 2; }
@@ -114,3 +115,5 @@ dialog .error { margin: 8px 0; }
   .maplibregl-ctrl-attrib-inner { max-height: 30dvh; overflow-y: auto; }
   .maplibregl-ctrl-attrib a { display: inline-block; min-height: 40px; padding-block: 10px; }
 }
+
+.bbox-label { font-size: 12px; line-height: 1.4; font-weight: 600; white-space: nowrap; pointer-events: none; text-shadow: 0 1px 2px #000, 0 0 3px #000; }

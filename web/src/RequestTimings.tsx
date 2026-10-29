@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type { TimingRecord } from './timings';
 
-const duration = (ms: number) => `${ms.toFixed(1)} ms`;
+const duration = (ms: number | null) => ms === null ? 'Unavailable' : `${ms.toFixed(1)} ms`;
 
 export function RequestTimings({ records }: { records: TimingRecord[] }) {
-  const [includeParsing, setIncludeParsing] = useState(false);
+  const [browserTotal, setBrowserTotal] = useState(false);
   const [selected, setSelected] = useState<TimingRecord | null>(null);
   const toggle = useRef<HTMLButtonElement>(null);
   const origin = useRef<SVGGElement | null>(null);
@@ -17,9 +17,9 @@ export function RequestTimings({ records }: { records: TimingRecord[] }) {
     return () => observer.disconnect();
   }, []);
 
-  const metric = includeParsing ? 'Request + parsing' : 'Request';
-  const values = records.map((record) => includeParsing ? record.totalMs : record.requestMs);
-  const maximum = Math.max(1, ...values);
+  const metric = browserTotal ? 'Browser total' : 'HTTP';
+  const values = records.map((record) => browserTotal ? record.totalMs : record.httpMs);
+  const maximum = Math.max(1, ...values.filter((value): value is number => value !== null));
   const magnitude = 10 ** Math.floor(Math.log10(maximum / 3));
   const step = [1, 2, 5, 10].find((value) => value * magnitude >= maximum / 3)! * magnitude;
   const top = Math.ceil(maximum / step) * step;
@@ -31,7 +31,7 @@ export function RequestTimings({ records }: { records: TimingRecord[] }) {
   const right = Math.max(left, width - 14);
   const points = values.map((value, i) => ({
     x: records.length === 1 ? (left + right) / 2 : left + i * (right - left) / (records.length - 1),
-    y: 132 - value / top * 100,
+    y: value === null ? 218 : 132 - value / top * 100,
   }));
   const angleLabels = records.length > 1 && (right - left) / (records.length - 1)
     < Math.max(...records.map((record) => String(record.id).length * 7)) + 6;
@@ -43,7 +43,7 @@ export function RequestTimings({ records }: { records: TimingRecord[] }) {
     <p className="timings-metric">{metric}</p>
     <div ref={panel} className="timings-chart">
       {records.length === 0 ? <p className="timings-empty">No completed requests yet</p>
-        : <svg width="100%" height="198" aria-label={`${metric} in milliseconds, oldest to newest`} role="group">
+        : <svg width="100%" height={values.includes(null) ? 236 : 198} aria-label={`${metric} in milliseconds, oldest to newest`} role="group">
           <text x="8" y="17" className="timings-axis">ms</text>
           {ticks.map((tick) => {
             const y = 132 - tick / top * 100;
@@ -52,7 +52,9 @@ export function RequestTimings({ records }: { records: TimingRecord[] }) {
               <text x={left - 6} y={y + 4} textAnchor="end" className="timings-axis">{tickLabel(tick)}</text>
             </g>;
           })}
-          <polyline points={points.map(({ x, y }) => `${x},${y}`).join(' ')} className="timings-line" />
+          {points.map((point, i) => i > 0 && values[i] !== null && values[i - 1] !== null
+            ? <line key={i} x1={points[i - 1].x} y1={points[i - 1].y} x2={point.x} y2={point.y} className="timings-line" /> : null)}
+          {values.includes(null) && <text x="8" y="200" className="timings-axis">Unavailable</text>}
           <text x={(left + right) / 2} y="187" textAnchor="middle" className="timings-axis">Calls</text>
           {records.map((record, i) => <g key={record.id} aria-hidden="true" className="timings-call-tick">
             <line x1={points[i].x} x2={points[i].x} y1="132" y2="138" className="timings-grid" />
@@ -72,12 +74,14 @@ export function RequestTimings({ records }: { records: TimingRecord[] }) {
               }
             }}>
             <rect x={points[i].x - hitWidth / 2} y={points[i].y - 12} width={hitWidth} height="24" className="timings-hit" />
-            <circle cx={points[i].x} cy={points[i].y} r="4" className="timings-marker" />
+            {values[i] === null
+              ? <path d={`M${points[i].x - 4},${points[i].y - 4} l8,8 m0,-8 l-8,8`} className="timings-unavailable" />
+              : <circle cx={points[i].x} cy={points[i].y} r="4" className="timings-marker" />}
           </g>)}
         </svg>}
     </div>
-    <button ref={toggle} className="timings-toggle" aria-pressed={includeParsing}
-      onClick={() => setIncludeParsing((value) => !value)}>Include parsing</button>
+    <button ref={toggle} className="timings-toggle" aria-pressed={browserTotal}
+      onClick={() => setBrowserTotal((value) => !value)}>Browser total</button>
     {selected && <TimingDialog record={selected} origin={origin.current} fallback={toggle}
       onClose={() => setSelected(null)} />}
   </figure>;
@@ -102,11 +106,11 @@ function TimingDialog({ record, origin, fallback, onClose }: {
     <h1 id="timing-title">Request details</h1>
     <table aria-label="Request timing details"><tbody>
       <tr><th scope="row">API URL</th><td className="timing-url">{record.url}</td></tr>
-      <tr><th scope="row">Request time</th><td>{duration(record.requestMs)}</td></tr>
-      <tr><th scope="row">Parse time</th><td>{duration(record.parseMs)}</td></tr>
-      <tr><th scope="row">Total time</th><td>{duration(record.totalMs)}</td></tr>
+      <tr><th scope="row">HTTP duration</th><td>{duration(record.httpMs)}</td></tr>
+      <tr><th scope="row">Download + decoding</th><td>{duration(record.downloadDecodeMs)}</td></tr>
+      <tr><th scope="row">Browser total</th><td>{duration(record.totalMs)}</td></tr>
     </tbody></table>
-    <p id="timing-explanation">Parse time includes downloading and decoding the response body.</p>
+    <p id="timing-explanation">HTTP duration uses browser network timestamps for connection setup, server processing, and response download. Unavailable means no unambiguous network timing was found. Download + decoding measures remaining body download and decoding after headers arrive. Browser total measures fetch through completed decoding, including JavaScript delays. These measurements overlap and are not additive.</p>
     <div className="dialog-actions"><button autoFocus onClick={onClose}>Close</button></div>
   </dialog>;
 }

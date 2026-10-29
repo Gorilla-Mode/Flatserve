@@ -38,6 +38,7 @@ export function filterUrl(base: string, value: string): URL {
 
 export interface DecodeOptions {
   signal: AbortSignal;
+  cache?: RequestCache;
   onBatch?: (features: Feature[]) => void;
   onHeader?: (header: HeaderMeta) => void;
   batchSize?: number;
@@ -46,8 +47,8 @@ export interface DecodeOptions {
 
 export interface RequestTiming {
   url: string;
-  requestMs: number;
-  parseMs: number;
+  httpMs: number | null;
+  downloadDecodeMs: number;
   totalMs: number;
 }
 
@@ -103,25 +104,59 @@ export async function decodeResponse(response: Response, options: DecodeOptions)
   }
 }
 
+/** Match only a completed fetch in this call's window; never guess between entries. */
+export function httpDuration(
+  entries: PerformanceEntry[], url: string, started: number, finished: number,
+  earlier: ReadonlySet<PerformanceEntry> = new Set(),
+): number | null {
+  const matches = entries.filter((entry) => !earlier.has(entry) && entry.entryType === 'resource' && entry.name === url
+    && (entry as PerformanceResourceTiming).initiatorType === 'fetch'
+    && entry.startTime >= started && entry.startTime <= finished) as PerformanceResourceTiming[];
+  if (matches.length !== 1) return null;
+  const { startTime, responseEnd } = matches[0];
+  return Number.isFinite(startTime) && Number.isFinite(responseEnd)
+    && responseEnd > startTime && responseEnd <= finished ? responseEnd - startTime : null;
+}
+
+// Entries alone cannot disambiguate a same-URL fetch whose body is still in flight.
+const activeTimings = new Map<string, Set<{ ambiguous: boolean }>>();
+
 export async function fetchFeatures(url: URL, options: DecodeOptions): Promise<Feature[]> {
   options.signal.throwIfAborted();
-  const started = performance.now();
-  const response = await fetch(url, {
-    signal: options.signal,
-    credentials: 'omit',
-    headers: { Accept: 'application/octet-stream' },
-  });
-  const headersReceived = performance.now();
-  const features = await decodeResponse(response, options);
-  const finished = performance.now();
-  options.signal.throwIfAborted();
-  options.onTiming?.({
-    url: url.href,
-    requestMs: headersReceived - started,
-    parseMs: finished - headersReceived,
-    totalMs: finished - started,
-  });
-  return features;
+  const requestUrl = url.href;
+  const active = activeTimings.get(requestUrl) ?? new Set<{ ambiguous: boolean }>();
+  const attribution = { ambiguous: active.size > 0 };
+  for (const other of active) other.ambiguous = true;
+  active.add(attribution);
+  activeTimings.set(requestUrl, active);
+  try {
+    // Exclude existing entries even if the browser rounds adjacent calls to the same timestamp.
+    const earlier = new Set(performance.getEntriesByName(requestUrl, 'resource'));
+    const started = performance.now();
+    const response = await fetch(url, {
+      signal: options.signal,
+      cache: options.cache,
+      credentials: 'omit',
+      headers: { Accept: 'application/octet-stream' },
+    });
+    const headersReceived = performance.now();
+    const features = await decodeResponse(response, options);
+    const finished = performance.now();
+    options.signal.throwIfAborted();
+    const httpMs = attribution.ambiguous ? null : httpDuration(
+      performance.getEntriesByName(requestUrl, 'resource'), requestUrl, started, finished, earlier,
+    );
+    options.onTiming?.({
+      url: requestUrl,
+      httpMs,
+      downloadDecodeMs: finished - headersReceived,
+      totalMs: finished - started,
+    });
+    return features;
+  } finally {
+    active.delete(attribution);
+    if (active.size === 0) activeTimings.delete(requestUrl);
+  }
 }
 
 export function errorMessage(error: unknown): string {

@@ -11,7 +11,8 @@ async function redOutline(page: Page) {
 }
 
 async function outlinePixels(page: Page, color: number[]) {
-  const screenshot = await page.locator('.maplibregl-canvas').screenshot();
+  // Measure outline pixels separately from the same-colored DOM labels.
+  const screenshot = await page.locator('.maplibregl-canvas').screenshot({ style: '.bbox-label { visibility: hidden !important; }' });
   return page.evaluate(async ({ base64, color }) => {
     const image = new Image();
     image.src = `data:image/png;base64,${base64}`;
@@ -87,6 +88,19 @@ test('Show buffer draws fetched coverage, stays fixed during reuse and pending w
   const green = await greenOutline(page);
   await show.click();
   const red = await redOutline(page);
+  await page.screenshot({ path: 'test-results/bbox-labels.png' });
+  for (const [text, color, outline] of [
+    ['Viewport bbox', 'rgb(22, 163, 74)', green],
+    ['Buffer bbox', 'rgb(239, 68, 68)', red],
+  ] as const) {
+    const label = page.locator('.bbox-label', { hasText: text });
+    await expect(label).toBeVisible();
+    await expect(label).toHaveCSS('color', color);
+    const box = (await label.boundingBox())!;
+    const mapBox = (await page.locator('.maplibregl-canvas').boundingBox())!;
+    expect(Math.abs(box.x - mapBox.x - outline.minX)).toBeLessThan(4);
+    expect(box.y + box.height, `${text}: ${JSON.stringify({ box, mapBox, outline })}`).toBeLessThan(mapBox.y + outline.minY);
+  }
   expect(red.count).toBeGreaterThan(100);
   // Recover the viewport from its buffered request and project the fetched edges.
   const coordinate = (url: URL, key: string) => Number(url.searchParams.get(key));
@@ -105,6 +119,7 @@ test('Show buffer draws fetched coverage, stays fixed during reuse and pending w
   expect(Math.abs(red.maxY - y(coordinate(fetched, 'minY')))).toBeLessThan(3);
   await show.click();
   expect((await redOutline(page)).count).toBe(0);
+  await expect(page.locator('.bbox-label', { hasText: 'Buffer bbox' })).toHaveCount(0);
   await show.click();
   expect(await redOutline(page)).toEqual(red);
   expect(await greenOutline(page)).toEqual(green);
@@ -208,7 +223,7 @@ test('preserves Show buffer through prerequisites and reconnections, hiding cove
   await expect(show).toHaveAttribute('aria-pressed', 'false');
 });
 
-test('connects, loads stations, caches filters through camera moves, and prompts again on reload', async ({ page }) => {
+test('connects, loads stations, preserves filters through camera moves, and prompts again on reload', async ({ page }) => {
   const requests: string[] = [];
   const errors: string[] = [];
   page.on('request', (request) => { if (request.url().includes('/fgb/')) requests.push(request.url()); });
@@ -236,7 +251,7 @@ test('connects, loads stations, caches filters through camera moves, and prompts
   await expect(page.getByRole('status')).toHaveText('7 features matching filter');
   await select.selectOption({ label: 'Oslo brann- og redningsetat' });
   await expect(page.getByRole('status')).toHaveText('7 features matching filter');
-  expect(requests.filter((url) => url.includes('/filter?'))).toHaveLength(2);
+  await expect.poll(() => requests.filter((url) => url.includes('/filter?')).length).toBe(3);
   await page.getByRole('button', { name: 'Filter', exact: true }).click();
   await expect.poll(() => requests.filter((url) => url.includes('/collection?')).length).toBeGreaterThan(2);
   await expect(page.getByRole('status')).toHaveText(/\d+ features in view/);
@@ -313,7 +328,7 @@ test('toggles filtering, updates active selections immediately, restores spatial
     await filter.click();
     await expect(page.getByRole('status')).toHaveText('7 features matching filter');
   }
-  expect(requests.filter((url) => url.includes('/filter?'))).toHaveLength(2);
+  expect(requests.filter((url) => url.includes('/filter?'))).toHaveLength(4);
   await page.locator('.controls').getByRole('button', { name: 'Connect', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(select).toHaveValue('');
