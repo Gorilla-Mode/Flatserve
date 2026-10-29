@@ -23,8 +23,9 @@ export function normalizeApiUrl(input: string): string {
   return url.href;
 }
 
-export function collectionUrl(base: string, bounds: Bounds): URL {
+export function collectionUrl(base: string, bounds: Bounds, userId: number): URL {
   const url = new URL('fgb/collection', normalizeApiUrl(base));
+  url.searchParams.set('userId', String(userId));
   for (const [key, value] of Object.entries(bounds)) url.searchParams.set(key, String(value));
   return url;
 }

@@ -62,7 +62,7 @@ describe('request timing', () => {
       });
       vi.stubGlobal('fetch', fetchMock);
       if (failure === 'already-aborted') controller.abort();
-      await expect(fetchFeatures(collectionUrl('https://example.org', WORLD), {
+      await expect(fetchFeatures(collectionUrl('https://example.org', WORLD, 2), {
         signal: controller.signal, onTiming,
         onHeader: () => { if (failure === 'abort-body') controller.abort(); },
       })).rejects.toThrow();
@@ -73,10 +73,14 @@ describe('request timing', () => {
 });
 
 describe('API URLs', () => {
+  it.each([0, 1, 2])('includes demo user %s in collection requests only', (userId) => {
+    expect(collectionUrl('https://example.org', WORLD, userId).searchParams.get('userId')).toBe(String(userId));
+    expect([...filterUrl('https://example.org', 'Oslo').searchParams.keys()]).toEqual(['attribute', 'value']);
+  });
   it('accepts absolute HTTP(S) and preserves a base path', () => {
     expect(normalizeApiUrl(' http://localhost:5220 ')).toBe('http://localhost:5220/');
     expect(normalizeApiUrl('https://example.org/proxy/v1///')).toBe('https://example.org/proxy/v1/');
-    const url = collectionUrl('https://example.org/proxy/v1', WORLD);
+    const url = collectionUrl('https://example.org/proxy/v1', WORLD, 2);
     expect(url.pathname).toBe('/proxy/v1/fgb/collection');
     expect(url.searchParams.get('minX')).toBe('-180');
     const filtered = filterUrl('https://example.org/proxy', 'A & B / Sør + Øst');

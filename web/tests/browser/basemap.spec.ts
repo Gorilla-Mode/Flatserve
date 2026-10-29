@@ -27,6 +27,7 @@ test('OpenFreeMap Dark renders roads, labels, attribution, and overlays at city 
   expect(style.layers.some((layer: { id: string; type: string }) => layer.type === 'symbol' && /road|highway/i.test(layer.id))).toBe(true);
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(page.getByRole('status')).toHaveText(/^\d+ features in view$/, { timeout: 30_000 });
   await page.waitForLoadState('networkidle');
   await expect(page.locator('.maplibregl-ctrl-attrib')).toContainText('OpenFreeMap');

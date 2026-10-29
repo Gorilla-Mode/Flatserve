@@ -12,6 +12,15 @@ const observers = () => ({
   onCoverage: vi.fn(),
 });
 
+// Existing spatial/filter cases start with an explicitly selected demo user.
+function norwaySession(...args: ConstructorParameters<typeof DatasetSession>) {
+  const session = new DatasetSession(...args);
+  void session.setUser(2);
+  vi.mocked(args[1].onCoverage)?.mockClear();
+  vi.mocked(args[1].onStatus).mockClear();
+  return session;
+}
+
 const area = (west = 0, east = 10) => viewportBounds(west, 50, east, 60);
 
 describe('session timings', () => {
@@ -21,7 +30,7 @@ describe('session timings', () => {
     let records: TimingRecord[] = [];
     const observer = { ...observers(), onTiming: (value: ReturnType<typeof timing>) => { records = timingHistory(records, value); } };
     const { read, calls } = pendingReader();
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     const discovery = session.discover();
     const bounds = viewportBounds(170, 50, 190, 60);
     const view = session.setBounds(bounds);
@@ -51,7 +60,7 @@ describe('session timings', () => {
   it('rejects late callbacks from cancelled and disposed requests, including discovery', async () => {
     const onTiming = vi.fn();
     const { read, calls } = pendingReader();
-    const session = new DatasetSession('https://example.org', { ...observers(), onTiming }, read);
+    const session = norwaySession('https://example.org', { ...observers(), onTiming }, read);
     const promises = [session.discover(), session.discover(), session.setBounds(area()), session.setFilter('Oslo')];
     for (const index of [0, 2]) {
       calls[index].options.onTiming?.(timing(calls[index].url));
@@ -74,7 +83,7 @@ describe('coverage notifications', () => {
   it('reports empty spatial success, reuses it silently, and keeps it during movement and failures', async () => {
     const observer = observers();
     const { read, calls } = pendingReader();
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     const initial = session.setBounds(area());
     expect(observer.onCoverage).not.toHaveBeenCalled();
     calls[0].resolve([]);
@@ -96,7 +105,7 @@ describe('coverage notifications', () => {
   it('clears coverage on refresh, query configuration changes, filters, and disposal', async () => {
     const observer = observers();
     const read = vi.fn().mockResolvedValue([]);
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     await session.setBounds(area());
     observer.onCoverage.mockClear();
     await session.refresh();
@@ -118,7 +127,7 @@ describe('coverage notifications', () => {
   it('publishes multipart coverage only on complete success, retaining previous coverage on partial failure', async () => {
     const observer = observers();
     const { read, calls } = pendingReader();
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     const initial = session.setBounds(area());
     calls[0].resolve([]);
     await initial;
@@ -143,7 +152,7 @@ describe('coverage notifications', () => {
   it('ignores aborted and stale responses, including after disposal', async () => {
     const observer = observers();
     const { read, calls } = pendingReader();
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     const stale = session.setBounds(area());
     const latest = session.setFilter('', area(20, 30));
     observer.onCoverage.mockClear();
@@ -167,10 +176,10 @@ describe('buffered live updates', () => {
   it('requests exact bounds with Buffer off and reuses containing coverage with live filtering', async () => {
     const observer = observers();
     const read = vi.fn().mockResolvedValue([station('inside', 8), station('edge', 10)]);
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     await session.setFilter('', area(), false);
     expect(Object.fromEntries(read.mock.calls[0][0].searchParams)).toEqual({
-      minX: '0', minY: '50', maxX: '10', maxY: '60',
+      userId: '2', minX: '0', minY: '50', maxX: '10', maxY: '60',
     });
     await session.setBounds(area(7, 9));
     expect(read).toHaveBeenCalledTimes(1);
@@ -182,7 +191,7 @@ describe('buffered live updates', () => {
 
   it('preserves Buffer through repeated filters and bbox changes and Retry', async () => {
     const read = vi.fn().mockResolvedValue([station('Oslo', 8)]);
-    const session = new DatasetSession('https://example.org', observers(), read);
+    const session = norwaySession('https://example.org', observers(), read);
     await session.setFilter('', area(), false);
     await session.setFilter('Oslo');
     await session.setFilter('', area(7, 9));
@@ -201,7 +210,7 @@ describe('buffered live updates', () => {
   it.each([false, true])('cancels pending work when Buffer becomes %s and rejects stale success and errors', async (enabled) => {
     const observer = observers();
     const { read, calls } = pendingReader();
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     const initial = session.setFilter('', area(), !enabled);
     calls[0].resolve([station('saved', 8)]);
     await initial;
@@ -227,7 +236,7 @@ describe('buffered live updates', () => {
   it('invalidates successful coverage and failed targets even if toggling leaves request bounds identical', async () => {
     const read = vi.fn().mockResolvedValueOnce([]).mockRejectedValueOnce(new Error('Offline')).mockResolvedValue([]);
     const observer = observers();
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     await session.setBounds([WORLD]);
     await session.setFilter('', [WORLD], false);
     expect(read).toHaveBeenCalledTimes(2);
@@ -241,10 +250,10 @@ describe('buffered live updates', () => {
   it('requests a buffer, filters locally during movement, and publishes only changed subsets', async () => {
     const observer = observers();
     const read = vi.fn().mockResolvedValue([station('inside', 8), station('buffer', 12), station('outside', 20)]);
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     await session.setBounds(area());
     expect(Object.fromEntries(read.mock.calls[0][0].searchParams)).toEqual({
-      minX: '-2.5', minY: '47.5', maxX: '12.5', maxY: '62.5',
+      userId: '2', minX: '-2.5', minY: '47.5', maxX: '12.5', maxY: '62.5',
     });
     expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('inside', 8)]);
     await session.setBounds(area(1, 11));
@@ -263,7 +272,7 @@ describe('buffered live updates', () => {
   it('keeps one logical request, catches up to the latest bounds, and filters completion against them', async () => {
     const observer = observers();
     const { read, calls } = pendingReader();
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     const first = session.setBounds(area());
     const moving = session.setBounds(area(10, 20));
     session.setBounds(area(20, 30));
@@ -287,7 +296,7 @@ describe('buffered live updates', () => {
   it('keeps the last successful dataset while loading and replaces it only on full success', async () => {
     const observer = observers();
     const { read, calls } = pendingReader();
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     const initial = session.setBounds(area());
     calls[0].resolve([station('old', 8)]);
     await initial;
@@ -309,7 +318,7 @@ describe('buffered live updates', () => {
   it('treats empty success as coverage', async () => {
     const observer = observers();
     const read = vi.fn().mockResolvedValue([]);
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     await session.setBounds(area());
     await session.setBounds(area(1, 11));
     await session.setBounds(area());
@@ -321,7 +330,7 @@ describe('buffered live updates', () => {
     const observer = observers();
     const read = vi.fn().mockResolvedValueOnce([station('old', 8)])
       .mockRejectedValueOnce(new Error('Offline')).mockResolvedValueOnce([station('new', 9)]);
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     await session.setBounds(area());
     await session.setBounds(area(3, 13));
     await session.setBounds(area(3, 13));
@@ -336,7 +345,7 @@ describe('buffered live updates', () => {
   it('immediately tries the latest desired target after an older target fails', async () => {
     const observer = observers();
     const { read, calls } = pendingReader();
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     const pending = session.setBounds(area());
     session.setBounds(area(20, 30));
     calls[0].reject(new Error('Offline'));
@@ -349,7 +358,7 @@ describe('buffered live updates', () => {
   it('establishes antimeridian coverage only after every part succeeds', async () => {
     const observer = observers();
     const { read, calls } = pendingReader();
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     const bounds = viewportBounds(170, 50, 190, 60);
     const pending = session.setBounds(bounds);
     calls[0].resolve([station('east', 175)]);
@@ -373,7 +382,7 @@ describe('buffered live updates', () => {
   it('invalidates coverage on bbox mode changes and returning from a filter', async () => {
     const observer = observers();
     const read = vi.fn().mockResolvedValue([station('Oslo', 8)]);
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     await session.setBounds(area());
     await session.setFilter('', area(4, 6));
     expect(read).toHaveBeenCalledTimes(2);
@@ -395,11 +404,131 @@ function pendingReader() {
   return { calls, read };
 }
 
+describe('user selection', () => {
+  it('allows only discovery before selection, even after setting a filter or retrying', async () => {
+    const observer = observers();
+    const read = vi.fn().mockResolvedValue([station('Norway catalog')]);
+    const session = new DatasetSession('https://example.org', observer, read);
+    await session.setBounds(area());
+    await session.setFilter('Oslo');
+    await session.refresh();
+    expect(read).not.toHaveBeenCalled();
+    await session.discover();
+    expect(read).toHaveBeenCalledOnce();
+    expect(read.mock.lastCall?.[0].searchParams.get('userId')).toBe('2');
+    expect(observer.onValues).toHaveBeenCalledExactlyOnceWith(['Norway catalog']);
+    expect(observer.onFeatures).not.toHaveBeenCalled();
+    await session.setUser(0);
+    expect(read.mock.lastCall?.[0].pathname).toBe('/fgb/filter');
+  });
+
+  it.each([0, 1])('uses Norway for discovery and retries with user %s already selected', async (userId) => {
+    const observer = observers();
+    const read = vi.fn().mockRejectedValueOnce(new Error('Offline')).mockResolvedValue([station('A'), station('B')]);
+    const session = new DatasetSession('https://example.org', observer, read);
+    await session.setUser(userId);
+    await session.discover();
+    expect(observer.onDiscovery.mock.lastCall?.[0].error).toBe('Offline');
+    await session.discover();
+    expect(read.mock.calls.map(([url]) => Object.fromEntries(url.searchParams))).toEqual([
+      { userId: '2', ...Object.fromEntries(Object.entries(WORLD).map(([key, value]) => [key, String(value)])) },
+      { userId: '2', ...Object.fromEntries(Object.entries(WORLD).map(([key, value]) => [key, String(value)])) },
+    ]);
+    expect(observer.onValues).toHaveBeenCalledExactlyOnceWith(['A', 'B']);
+    expect(observer.onFeatures).not.toHaveBeenCalled();
+  });
+
+  it('keeps discovery alive while cancelling map work and rejecting late success, errors and timings', async () => {
+    const observer = { ...observers(), onTiming: vi.fn() };
+    const { read, calls } = pendingReader();
+    const session = new DatasetSession('https://example.org', observer, read);
+    const discovery = session.discover();
+    await session.setBounds(area());
+    const agder = session.setUser(0);
+    const oslo = session.setUser(1);
+    const norway = session.setUser(2);
+    expect(calls.map((call) => call.url.searchParams.get('userId'))).toEqual(['2', '0', '1', '2']);
+    expect(calls.map((call) => call.options.signal.aborted)).toEqual([false, true, true, false]);
+    observer.onFeatures.mockClear();
+    observer.onCoverage.mockClear();
+    observer.onStatus.mockClear();
+    calls[1].options.onTiming?.({ url: calls[1].url.href, httpMs: 1, totalMs: 2, downloadDecodeMs: 1 });
+    calls[1].resolve([station('stale')]);
+    calls[2].reject(new Error('Stale failure'));
+    await Promise.all([agder, oslo]);
+    expect(observer.onFeatures).not.toHaveBeenCalled();
+    expect(observer.onCoverage).not.toHaveBeenCalled();
+    expect(observer.onStatus).not.toHaveBeenCalled();
+    expect(observer.onTiming).not.toHaveBeenCalled();
+    calls[0].resolve([station('Catalog')]);
+    await discovery;
+    expect(observer.onValues).toHaveBeenCalledExactlyOnceWith(['Catalog']);
+    calls[3].resolve([station('current')]);
+    await norway;
+    expect(observer.onFeatures).toHaveBeenCalledExactlyOnceWith([station('current')]);
+  });
+
+  it.each([false, true])('clears stations and coverage and retains bounds and Buffer=%s across all IDs and retries', async (buffer) => {
+    const observer = observers();
+    const { read, calls } = pendingReader();
+    const session = new DatasetSession('https://example.org', observer, read);
+    await session.setFilter('', area(), buffer);
+    for (const userId of [0, 1, 2]) {
+      const index = calls.length;
+      const changed = session.setUser(userId);
+      expect(calls[index].url.searchParams.get('userId')).toBe(String(userId));
+      expect(calls[index].url.searchParams.get('minX')).toBe(userId === 0 ? (buffer ? '-2.5' : '0') : (buffer ? '-1' : '1'));
+      expect(observer.onCoverage.mock.lastCall).toEqual([undefined]);
+      if (userId !== 0) expect(observer.onFeatures.mock.lastCall).toEqual([[]]);
+      calls[index].resolve([station(String(userId))]);
+      await changed;
+      await session.setBounds(area(1, 9));
+      await session.setUser(userId);
+      expect(calls).toHaveLength(index + 1);
+      const retry = session.refresh();
+      expect(calls[index + 1].url.searchParams.get('userId')).toBe(String(userId));
+      calls[index + 1].resolve([station(String(userId))]);
+      await retry;
+    }
+    await session.setUser(null);
+    expect(observer.onFeatures.mock.lastCall).toEqual([[]]);
+    expect(observer.onStatus.mock.lastCall).toEqual([{ loading: false, error: null }]);
+    await session.refresh();
+    expect(calls).toHaveLength(6);
+  });
+
+  it.each([0, 1, 2])('scopes split requests and retries to user %s', async (userId) => {
+    const observer = observers();
+    const read = vi.fn().mockResolvedValue([]);
+    const session = new DatasetSession('https://example.org', observer, read);
+    await session.setUser(userId);
+    await session.setBounds(viewportBounds(170, 50, 190, 60));
+    await session.refresh();
+    expect(read).toHaveBeenCalledTimes(4);
+    expect(read.mock.calls.every(([url]) => url.searchParams.get('userId') === String(userId))).toBe(true);
+  });
+
+  it('preserves active filter across users and restores spatial settings when deactivated', async () => {
+    const read = vi.fn().mockResolvedValue([station('Oslo')]);
+    const session = new DatasetSession('https://example.org', observers(), read);
+    await session.setUser(2);
+    await session.setFilter('Oslo', area(7, 9), false);
+    for (const userId of [0, 1, 2]) await session.setUser(userId);
+    expect(read).toHaveBeenCalledTimes(4);
+    expect(read.mock.calls.every(([url, options]) => url.pathname === '/fgb/filter'
+      && url.search === '?attribute=brannvesen&value=Oslo' && options.cache === 'no-store')).toBe(true);
+    await session.setFilter('');
+    expect(Object.fromEntries(read.mock.lastCall?.[0].searchParams)).toEqual({
+      userId: '2', minX: '7', minY: '50', maxX: '9', maxY: '60',
+    });
+  });
+});
+
 describe('connection sessions', () => {
   it.each(['Oslo', 'empty'])('fetches repeated %s filters and refreshes without republishing identical results', async (selection) => {
     const observer = observers();
     const { read, calls } = pendingReader();
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     const initial = session.setFilter('previous');
     calls[0].resolve([station('previous')]);
     await initial;
@@ -427,7 +556,7 @@ describe('connection sessions', () => {
       .mockResolvedValueOnce([station('Oslo')])
       .mockRejectedValueOnce(new Error('Offline'))
       .mockResolvedValueOnce([station('updated Oslo')]);
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     await session.setFilter('Oslo');
     observer.onFeatures.mockClear();
     await session.setFilter('Oslo');
@@ -442,7 +571,7 @@ describe('connection sessions', () => {
   it('cancels spatial and filter requests through rapid toggles without publishing stale results', async () => {
     const observer = observers();
     const { read, calls } = pendingReader();
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     const spatial = session.setFilter('', area(), false);
     const oslo = session.setFilter('Oslo');
     const other = session.setFilter('Other');
@@ -473,7 +602,7 @@ describe('connection sessions', () => {
       { ...station(''), properties: null }])).toEqual(['A', 'Z']);
     const observer = observers();
     const { read, calls } = pendingReader();
-    const session = new DatasetSession('https://example.org/base/', observer, read);
+    const session = norwaySession('https://example.org/base/', observer, read);
     const discovering = session.discover();
     const viewport = session.setBounds([{ minX: 7, minY: 58, maxX: 8, maxY: 59 }]);
     expect(calls[0].url.searchParams.get('minX')).toBe('-180');
@@ -488,7 +617,7 @@ describe('connection sessions', () => {
   it('aborts incompatible modes and ignores late callbacks/results even if transport ignores abort', async () => {
     const observer = observers();
     const { read, calls } = pendingReader();
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     const old = session.setBounds([WORLD]);
     const latest = session.setFilter('', area());
     expect(calls[0].options.signal.aborted).toBe(true);
@@ -505,7 +634,7 @@ describe('connection sessions', () => {
   it('refetches previous filters (including empty results) and keeps matches while the camera moves', async () => {
     const observer = observers();
     const read = vi.fn(async (url: URL, _options: DecodeOptions) => url.searchParams.get('value') === 'empty' ? [] : [station('Oslo')]);
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     await session.setBounds([WORLD]);
     await session.setFilter('Oslo');
     expect(read.mock.lastCall?.[0].pathname).toBe('/fgb/filter');
@@ -528,7 +657,7 @@ describe('connection sessions', () => {
   it('does not cancel an in-flight selected filter when the camera moves', async () => {
     const observer = observers();
     const { read, calls } = pendingReader();
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     const query = session.setFilter('Oslo');
     await session.setBounds([WORLD]);
     expect(calls).toHaveLength(1);
@@ -539,14 +668,14 @@ describe('connection sessions', () => {
   it('restores the latest bbox atomically when leaving a text filter', async () => {
     const observer = observers();
     const read = vi.fn(async (_url: URL) => [station('Oslo')]);
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     await session.setBounds([WORLD]);
     await session.setFilter('Oslo');
     const before = read.mock.calls.length;
     const bbox = { minX: 7, minY: 58, maxX: 9, maxY: 60 };
     await session.setFilter('', [bbox]);
     expect(read).toHaveBeenCalledTimes(before + 1);
-    expect(Object.fromEntries(read.mock.lastCall![0].searchParams)).toEqual({ minX: '6.5', minY: '57.5', maxX: '9.5', maxY: '60.5' });
+    expect(Object.fromEntries(read.mock.lastCall![0].searchParams)).toEqual({ userId: '2', minX: '6.5', minY: '57.5', maxX: '9.5', maxY: '60.5' });
     expect(observer.onStatus.mock.lastCall?.[0].loading).toBe(false);
   });
   it('atomically combines both halves of an antimeridian viewport', async () => {
@@ -556,7 +685,7 @@ describe('connection sessions', () => {
       options.onBatch?.(features);
       return features;
     });
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     await session.setBounds([{ ...WORLD, minX: 170 }, { ...WORLD, maxX: -170 }]);
     expect(read).toHaveBeenCalledTimes(2);
     expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('165', 175), station('-180', -175)]);
@@ -564,7 +693,7 @@ describe('connection sessions', () => {
   it('aborts discovery and feature requests on a connection change, without publishing late results', async () => {
     const observer = observers();
     const { read, calls } = pendingReader();
-    const session = new DatasetSession('https://old.example.org', observer, read);
+    const session = norwaySession('https://old.example.org', observer, read);
     const discovering = session.discover();
     const viewing = session.setFilter('Oslo');
     session.dispose();
@@ -577,7 +706,7 @@ describe('connection sessions', () => {
     await Promise.all([discovering, viewing]);
     expect(observer.onFeatures).not.toHaveBeenCalled();
     expect(observer.onValues).not.toHaveBeenCalled();
-    const fresh = new DatasetSession('https://new.example.org', observer, read);
+    const fresh = norwaySession('https://new.example.org', observer, read);
     const query = fresh.setFilter('Oslo');
     expect(calls[2].url.hostname).toBe('new.example.org');
     calls[2].resolve([]);
@@ -586,7 +715,7 @@ describe('connection sessions', () => {
   it('reports failures and retries filter requests', async () => {
     const observer = observers();
     const read = vi.fn().mockRejectedValueOnce(new Error('Offline')).mockResolvedValueOnce([station('Oslo')]);
-    const session = new DatasetSession('https://example.org', observer, read);
+    const session = norwaySession('https://example.org', observer, read);
     await session.setFilter('Oslo');
     expect(observer.onStatus.mock.lastCall?.[0]).toEqual({ loading: false, error: 'Offline' });
     await session.refresh();

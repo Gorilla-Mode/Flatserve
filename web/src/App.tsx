@@ -36,6 +36,7 @@ export function App() {
   const [connection, setConnection] = useState<{ url: string; id: number } | null>(null);
   const [timings, recordTiming] = useReducer(timingHistory, []);
   const [connectionOpen, setConnectionOpen] = useState(true);
+  const [selectedUser, setSelectedUser] = useState<number | null>(null);
   const [selectedBrannvesen, setSelectedBrannvesen] = useState('');
   const [filterEnabled, setFilterEnabled] = useState(false);
   const selection = filterEnabled ? selectedBrannvesen : '';
@@ -187,6 +188,10 @@ export function App() {
     };
   }, [connection, mapReady, bboxActive, selection, bufferEnabled]);
 
+  useEffect(() => {
+    void session.current?.setUser(selectedUser);
+  }, [connection, selectedUser]);
+
   const countLabel = `${count.toLocaleString()} features${selection ? ' matching filter' : bboxActive ? ' in bbox' : ' in view'}`;
 
   return (
@@ -218,12 +223,24 @@ export function App() {
                 </li>
               </ul>
             </li>
+            <li>
+              <label htmlFor="user">Select user</label>
+              <select id="user" value={selectedUser ?? ''} onChange={(event) => {
+                setSelectedUser(Number(event.target.value));
+              }}>
+                <option value="" disabled>Select user…</option>
+                <option value="0">Agder</option>
+                <option value="1">Oslo</option>
+                <option value="2">Norway</option>
+              </select>
+            </li>
           </ul>
         </section>
         <section className="sidebar-section" aria-labelledby="status-heading">
           <h2 id="status-heading">Status</h2>
           <div className="status" role="status" aria-live="polite">
             {!connection ? 'Connect to an API to view fire stations.'
+              : selectedUser === null ? 'Select a user to load stations.'
               : status.loading ? `Loading… ${countLabel}`
               : status.error ? `${countLabel} loaded`
               : bboxActive ? countLabel
@@ -238,7 +255,7 @@ export function App() {
         </section>
         <form className="sidebar-section filter-panel" aria-labelledby="filter-heading" onSubmit={(event) => {
           event.preventDefault();
-          if (values.includes(selectedBrannvesen)) setFilterEnabled((enabled) => !enabled);
+          if (selectedUser !== null && values.includes(selectedBrannvesen)) setFilterEnabled((enabled) => !enabled);
         }}>
           <h2 id="filter-heading">Filter</h2>
           <ul className="control-tree filter-tree">
@@ -252,7 +269,7 @@ export function App() {
               </select>
               <ul>
                 <li>
-                  <button type="submit" disabled={!values.includes(selectedBrannvesen)} aria-pressed={filterEnabled}>Filter</button>
+                  <button type="submit" disabled={selectedUser === null || !values.includes(selectedBrannvesen)} aria-pressed={filterEnabled}>Filter</button>
                 </li>
               </ul>
             </li>
@@ -265,7 +282,8 @@ export function App() {
       </section>
       <div ref={mapContainer} className="map" aria-label="Map of fire stations" />
       <ConnectionDialog open={connectionOpen} initialUrl={connection?.url ?? 'http://localhost:5220'}
-        canDismiss={!!connection} onClose={() => setConnectionOpen(false)} onConnect={(url) => {
+        onClose={() => setConnectionOpen(false)} onConnect={(url) => {
+          if (connection) setSelectedUser(null);
           setSelectedBrannvesen('');
           setFilterEnabled(false);
           session.current?.dispose();
@@ -277,8 +295,8 @@ export function App() {
   );
 }
 
-function ConnectionDialog({ open, initialUrl, canDismiss, onClose, onConnect }: {
-  open: boolean; initialUrl: string; canDismiss: boolean;
+function ConnectionDialog({ open, initialUrl, onClose, onConnect }: {
+  open: boolean; initialUrl: string;
   onClose: () => void; onConnect: (url: string) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -296,10 +314,7 @@ function ConnectionDialog({ open, initialUrl, canDismiss, onClose, onConnect }: 
     try { onConnect(normalizeApiUrl(url)); }
     catch (error) { setError(errorMessage(error)); }
   }
-  return <dialog ref={dialog} aria-labelledby="connection-title" onCancel={(event) => {
-    if (!canDismiss) event.preventDefault();
-    else onClose();
-  }}>
+  return <dialog ref={dialog} aria-labelledby="connection-title" onCancel={onClose}>
     <form onSubmit={submit}>
       <h1 id="connection-title">Connect to Flatserve</h1>
       <p>Enter the API URL to explore Norway’s fire stations.</p>
@@ -309,7 +324,7 @@ function ConnectionDialog({ open, initialUrl, canDismiss, onClose, onConnect }: 
         onChange={(event) => { setUrl(event.target.value); setError(''); }} />
       {error && <p className="error" id="url-error" role="alert">{error}</p>}
       <div className="dialog-actions">
-        {canDismiss && <button type="button" onClick={onClose}>Cancel</button>}
+        <button type="button" onClick={onClose}>Cancel</button>
         <button type="submit">Connect</button>
       </div>
     </form>

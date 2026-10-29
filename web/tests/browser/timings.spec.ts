@@ -53,6 +53,7 @@ for (const empty of [false, true]) {
     });
     await page.goto('./');
     await connect(page);
+    await page.getByLabel('Select user', { exact: true }).selectOption('2');
     const status = page.getByRole('status');
     const select = page.getByLabel('Brannvesen', { exact: true });
     const filter = page.getByRole('button', { name: 'Filter', exact: true });
@@ -166,6 +167,7 @@ test('retains ten calls and keeps an evicted selection stable with fallback focu
   await page.route('https://timings.example/**', (route) => route.fulfill({ body: bytes }));
   await page.goto('./');
   await connect(page);
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(page.getByRole('status')).toHaveText('1 features in view');
   await expect(page.getByRole('button', { name: 'Buffer', exact: true })).toBeEnabled();
   await points(page).first().click();
@@ -208,6 +210,7 @@ for (const width of [1280, 375, 280]) {
     });
     await page.goto('./');
     await connect(page);
+    await page.getByLabel('Select user', { exact: true }).selectOption('2');
     await expect(page.getByRole('status')).toHaveText('1 features in view');
     await page.getByLabel('Brannvesen', { exact: true }).selectOption(filterName);
     await page.getByRole('button', { name: 'Filter', exact: true }).click();
@@ -250,6 +253,7 @@ test('unavailable HTTP retains its position and details, breaks lines, and has a
   await page.route('https://timings.example/**', (route) => route.fulfill({ body: Buffer.from(encoded([station('A'), station('B')])) }));
   await page.goto('./');
   await connect(page);
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(page.getByRole('status')).toHaveText('2 features in view');
   const select = page.getByLabel('Brannvesen', { exact: true });
   await select.selectOption('A');

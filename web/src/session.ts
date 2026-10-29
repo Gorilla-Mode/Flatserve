@@ -26,6 +26,7 @@ export class DatasetSession {
   private discoveryRequest?: AbortController;
   private generation = 0;
   private disposed = false;
+  private userId: number | null = null;
   private selection = '';
   private bufferEnabled = true;
   private bounds: Bounds[] = [];
@@ -49,7 +50,7 @@ export class DatasetSession {
     const current = () => !this.disposed && !request.signal.aborted;
     this.observer.onDiscovery({ loading: true, error: null });
     try {
-      const features = await this.read(collectionUrl(this.base, WORLD), {
+      const features = await this.read(collectionUrl(this.base, WORLD, 2), {
         signal: request.signal,
         onHeader: (header) => { if (current()) this.observer.onHeader(header); },
         onTiming: (timing) => { if (current()) this.observer.onTiming?.(timing); },
@@ -73,6 +74,14 @@ export class DatasetSession {
     this.selection = selection;
     this.bounds = bounds;
     this.bufferEnabled = bufferEnabled;
+    return this.refresh();
+  }
+
+  setUser(userId: number | null): Promise<void> {
+    if (this.disposed || this.userId === userId) return Promise.resolve();
+    this.userId = userId;
+    this.features = [];
+    this.publish();
     return this.refresh();
   }
 
@@ -105,6 +114,11 @@ export class DatasetSession {
 
   private schedule(): Promise<void> {
     if (this.disposed) return Promise.resolve();
+    const userId = this.userId;
+    if (userId === null) {
+      this.observer.onStatus({ loading: false, error: null });
+      return Promise.resolve();
+    }
     // Movement only updates the desired bounds while one logical request is active.
     if (this.viewRequest) return this.pending!;
     const selection = this.selection;
@@ -116,7 +130,7 @@ export class DatasetSession {
     const target = selection || JSON.stringify(requestBounds);
     if ((!selection && !requestBounds.length) || target === this.failedTarget) return Promise.resolve();
     const urls = selection ? [filterUrl(this.base, selection)]
-      : requestBounds.map((bounds) => collectionUrl(this.base, bounds));
+      : requestBounds.map((bounds) => collectionUrl(this.base, bounds, userId));
     const generation = this.generation;
     const request = new AbortController();
     this.viewRequest = request;
