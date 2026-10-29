@@ -3,8 +3,8 @@ import type { FormEvent } from 'react';
 import { Map as MapLibreMap, Marker, NavigationControl, setWorkerUrl } from 'maplibre-gl';
 import type { GeoJSONSource } from 'maplibre-gl';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
-import type { Feature, FeatureCollection } from 'geojson';
-import { errorMessage, normalizeApiUrl } from './api';
+import type { Feature, FeatureCollection, Polygon } from 'geojson';
+import { errorMessage, fetchAuthorizedArea, normalizeApiUrl } from './api';
 import { coverageOutline, insetBounds, viewportBounds } from './bounds';
 import type { Bounds } from './bounds';
 import { DatasetSession } from './session';
@@ -37,6 +37,14 @@ export function App() {
   const [timings, recordTiming] = useReducer(timingHistory, []);
   const [connectionOpen, setConnectionOpen] = useState(true);
   const [selectedUser, setSelectedUser] = useState<number | null>(null);
+  const [authorizedAreaEnabled, setAuthorizedAreaEnabled] = useState(false);
+  const [authorizedArea, setAuthorizedArea] = useState<{
+    connection: NonNullable<typeof connection>; userId: number; feature: Feature<Polygon>;
+  } | null>(null);
+  const authorizedAreaCache = useRef<typeof authorizedArea>(null);
+  const [authorizedAreaStatus, setAuthorizedAreaStatus] = useState({ loading: false, error: null as string | null });
+  const [authorizedAreaRetry, retryAuthorizedArea] = useReducer((attempt: number) => attempt + 1, 0);
+  const canShowAuthorizedArea = !!connection && mapReady && selectedUser !== null;
   const [selectedBrannvesen, setSelectedBrannvesen] = useState('');
   const [filterEnabled, setFilterEnabled] = useState(false);
   const selection = filterEnabled ? selectedBrannvesen : '';
@@ -70,6 +78,15 @@ export function App() {
     instance.addControl(new NavigationControl(), 'bottom-right');
     instance.on('error', (event) => setMapError(`Basemap: ${event.error.message}`));
     instance.on('load', () => {
+      instance.addSource('authorized-area', { type: 'geojson', data: collection([]) });
+      instance.addLayer({
+        id: 'authorized-area-fill', type: 'fill', source: 'authorized-area',
+        paint: { 'fill-color': '#38bdf8', 'fill-opacity': 0.12 },
+      });
+      instance.addLayer({
+        id: 'authorized-area-outline', type: 'line', source: 'authorized-area',
+        paint: { 'line-color': '#38bdf8', 'line-width': 2 },
+      });
       instance.addSource('query-bbox', { type: 'geojson', data: collection([]) });
       instance.addLayer({
         id: 'query-bbox', type: 'line', source: 'query-bbox',
@@ -97,6 +114,34 @@ export function App() {
       map.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    if (authorizedAreaCache.current?.connection !== connection || authorizedAreaCache.current?.userId !== selectedUser) {
+      authorizedAreaCache.current = null;
+      setAuthorizedArea(null);
+    }
+    setAuthorizedAreaStatus({ loading: false, error: null });
+    if (!authorizedAreaEnabled || !connection || !mapReady || selectedUser === null || authorizedAreaCache.current) return;
+    const controller = new AbortController();
+    setAuthorizedAreaStatus({ loading: true, error: null });
+    void fetchAuthorizedArea(connection.url, selectedUser, controller.signal).then((feature) => {
+      if (controller.signal.aborted) return;
+      const loaded = { connection, userId: selectedUser, feature };
+      authorizedAreaCache.current = loaded;
+      setAuthorizedArea(loaded);
+      setAuthorizedAreaStatus({ loading: false, error: null });
+    }).catch((error: unknown) => {
+      if (!controller.signal.aborted) setAuthorizedAreaStatus({ loading: false, error: errorMessage(error) });
+    });
+    return () => { controller.abort(); };
+  }, [connection, selectedUser, mapReady, authorizedAreaEnabled, authorizedAreaRetry]);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    const visible = authorizedAreaEnabled && authorizedArea?.connection === connection && authorizedArea.userId === selectedUser;
+    (map.current?.getSource('authorized-area') as GeoJSONSource | undefined)
+      ?.setData(collection(visible ? [authorizedArea.feature] : []));
+  }, [mapReady, authorizedAreaEnabled, authorizedArea, connection, selectedUser]);
 
   useEffect(() => {
     if (!connection) return;
@@ -233,6 +278,16 @@ export function App() {
                 <option value="1">Oslo</option>
                 <option value="2">Norway</option>
               </select>
+              <ul>
+                <li>
+                  <button disabled={!canShowAuthorizedArea} aria-pressed={authorizedAreaEnabled}
+                    onClick={() => setAuthorizedAreaEnabled(!authorizedAreaEnabled)}>Show authorized area</button>
+                  {authorizedAreaStatus.loading && <small aria-live="polite">Loading authorized area…</small>}
+                  {authorizedAreaStatus.error && <div className="error" role="alert">
+                    {authorizedAreaStatus.error} <button onClick={retryAuthorizedArea}>Retry authorized area</button>
+                  </div>}
+                </li>
+              </ul>
             </li>
           </ul>
         </section>
@@ -284,6 +339,9 @@ export function App() {
       <ConnectionDialog open={connectionOpen} initialUrl={connection?.url ?? 'http://localhost:5220'}
         onClose={() => setConnectionOpen(false)} onConnect={(url) => {
           if (connection) setSelectedUser(null);
+          setAuthorizedAreaEnabled(false);
+          authorizedAreaCache.current = null;
+          setAuthorizedArea(null);
           setSelectedBrannvesen('');
           setFilterEnabled(false);
           session.current?.dispose();

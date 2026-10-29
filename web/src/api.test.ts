@@ -1,9 +1,85 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { collectionUrl, decodeResponse, fetchFeatures, filterUrl, httpDuration, normalizeApiUrl } from './api';
+import { authorizedAreaUrl, collectionUrl, decodeResponse, fetchAuthorizedArea, fetchFeatures, filterUrl, httpDuration, normalizeApiUrl } from './api';
 import { WORLD } from './bounds';
 import { chunked, encoded, headerOnly } from '../tests/fixtures';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+const polygon = {
+  type: 'Feature', properties: { userId: 0 },
+  geometry: { type: 'Polygon', coordinates: [[[7, 58], [9, 58], [9, 60], [7, 58]]] },
+};
+
+describe('authorized area', () => {
+  it.each([0, 1, 2])('preserves the base path for user %s and requests GeoJSON without credentials', async (id) => {
+    const url = authorizedAreaUrl('https://example.org/proxy/v1///', id);
+    expect(url.href).toBe(`https://example.org/proxy/v1/fgb/auth-polygon/${id}`);
+    expect(authorizedAreaUrl('http://localhost:5220', id).pathname).toBe(`/fgb/auth-polygon/${id}`);
+    const fetchMock = vi.fn(async () => Response.json(polygon));
+    vi.stubGlobal('fetch', fetchMock);
+    const signal = new AbortController().signal;
+    expect(await fetchAuthorizedArea('https://example.org/proxy/v1', id, signal)).toEqual(polygon);
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(url, {
+      signal, credentials: 'omit', headers: { Accept: 'application/geo+json' },
+    });
+  });
+
+  it.each([
+    null, {}, { ...polygon, type: 'FeatureCollection' }, { ...polygon, geometry: null },
+    { ...polygon, properties: [] },
+    ...[
+      { type: 'MultiPolygon', coordinates: [polygon.geometry.coordinates] },
+      { type: 'Point', coordinates: [7, 58] },
+      { type: 'Polygon', coordinates: [] },
+      { type: 'Polygon', coordinates: null },
+      { type: 'Polygon', coordinates: [[]] },
+      { type: 'Polygon', coordinates: [[[7, 58], [9, 58], [7, 58]]] },
+      { type: 'Polygon', coordinates: [[[7, 58], [9, 58], [9, 60], [8, 58]]] },
+      { type: 'Polygon', coordinates: [[[7, 58], [9, '58'], [9, 60], [7, 58]]] },
+      { type: 'Polygon', coordinates: [[[7, 58], [9, null], [9, 60], [7, 58]]] },
+      { type: 'Polygon', coordinates: [[[7, 58], [9], [9, 60], [7, 58]]] },
+    ].map((geometry) => ({ ...polygon, geometry })),
+  ])('rejects malformed GeoJSON (%j)', async (feature) => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(feature)));
+    await expect(fetchAuthorizedArea('https://example.org', 0, new AbortController().signal))
+      .rejects.toThrow('valid Polygon and finite coordinates');
+  });
+
+  it.each([NaN, Infinity, -Infinity])('rejects non-finite coordinates (%s)', async (coordinate) => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ ...polygon,
+      geometry: { type: 'Polygon', coordinates: [[[7, 58], [9, coordinate], [9, 60], [7, 58]]] },
+    }) })));
+    await expect(fetchAuthorizedArea('https://example.org', 0, new AbortController().signal)).rejects.toThrow('finite coordinates');
+  });
+
+  it('accepts holes and finite altitude coordinates', async () => {
+    const feature = { ...polygon, properties: null, geometry: { type: 'Polygon', coordinates: [
+      [[7, 58, 0], [9, 58, 0], [9, 60, 0], [7, 58, 0]],
+      [[8, 58.5, 0], [8.5, 58.5, 0], [8.5, 59, 0], [8, 58.5, 0]],
+    ] } };
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(feature)));
+    expect(await fetchAuthorizedArea('https://example.org', 0, new AbortController().signal)).toEqual(feature);
+  });
+
+  it('reports HTTP and invalid JSON errors', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('Unavailable', { status: 503 })));
+    await expect(fetchAuthorizedArea('https://example.org', 1, new AbortController().signal)).rejects.toThrow('HTTP 503');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('invalid json')));
+    await expect(fetchAuthorizedArea('https://example.org', 1, new AbortController().signal)).rejects.toThrow('not valid JSON');
+  });
+
+  it('honors abort before fetching and after reading the body even when fetch ignores cancellation', async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async () => Response.json(polygon));
+    vi.stubGlobal('fetch', fetchMock);
+    controller.abort();
+    await expect(fetchAuthorizedArea('https://example.org', 0, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const pending = new AbortController();
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => { pending.abort(); return polygon; } })));
+    await expect(fetchAuthorizedArea('https://example.org', 0, pending.signal)).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
 
 describe('fetch options', () => {
   it.each([undefined, 'no-store'] as const)('forwards cache mode %s without changing the URL', async (cache) => {

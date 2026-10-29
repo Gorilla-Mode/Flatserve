@@ -46,6 +46,26 @@ async function check(url: URL, count: number) {
 }
 
 describe('live backend FlatGeobuf exports', () => {
+  it.each([0, 1, 2])('returns a GeoJSON auth polygon for user %s', async (userId) => {
+    const response = await fetch(new URL(`fgb/auth-polygon/${userId}`, base));
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toMatch(/^application\/geo\+json/);
+    const feature = await response.json();
+    expect(feature.type).toBe('Feature');
+    expect(feature.properties).toEqual({ userId });
+    expect(feature.geometry.type).toBe('Polygon');
+    expect(Object.keys(feature.geometry).sort()).toEqual(['coordinates', 'type']);
+    expect(feature.geometry.coordinates).toHaveLength(1);
+    for (const ring of feature.geometry.coordinates) {
+      expect(ring.length).toBeGreaterThanOrEqual(4);
+      expect(ring[0]).toEqual(ring.at(-1));
+      for (const coordinate of ring) {
+        expect(coordinate).toHaveLength(2);
+        expect(coordinate.every((value: unknown) => typeof value === 'number' && Number.isFinite(value))).toBe(true);
+      }
+    }
+  });
+
   it('decodes all 639 features', async () => { await check(collectionUrl(base, WORLD, 2), 639); });
   it.each([
     ['Kristiansand centre', 7.95, 58.10, 8.08, 58.20, 1],

@@ -1,6 +1,6 @@
 import { deserialize } from 'flatgeobuf/geojson';
 import type { HeaderMeta } from 'flatgeobuf/lib/mjs/header-meta.js';
-import type { Feature } from 'geojson';
+import type { Feature, Polygon } from 'geojson';
 import type { Bounds } from './bounds';
 
 export type { HeaderMeta };
@@ -35,6 +35,46 @@ export function filterUrl(base: string, value: string): URL {
   url.searchParams.set('attribute', 'brannvesen');
   url.searchParams.set('value', value);
   return url;
+}
+
+export function authorizedAreaUrl(base: string, userId: number): URL {
+  return new URL(`fgb/auth-polygon/${userId}`, normalizeApiUrl(base));
+}
+
+export async function fetchAuthorizedArea(base: string, userId: number, signal: AbortSignal): Promise<Feature<Polygon>> {
+  signal.throwIfAborted();
+  const response = await fetch(authorizedAreaUrl(base, userId), {
+    signal, credentials: 'omit', headers: { Accept: 'application/geo+json' },
+  });
+  signal.throwIfAborted();
+  if (!response.ok) throw new Error(`Authorized area API returned HTTP ${response.status}.`);
+  let feature: unknown;
+  try {
+    feature = await response.json();
+  } catch {
+    signal.throwIfAborted();
+    throw new Error('The authorized area response is not valid JSON.');
+  }
+  signal.throwIfAborted();
+  if (!isPolygonFeature(feature)) {
+    throw new Error('The authorized area must be a GeoJSON Feature with a valid Polygon and finite coordinates.');
+  }
+  return feature;
+}
+
+function isPolygonFeature(value: unknown): value is Feature<Polygon> {
+  if (!value || typeof value !== 'object') return false;
+  const feature = value as Feature<Polygon>;
+  if (feature.type !== 'Feature' || feature.geometry?.type !== 'Polygon'
+    || !(feature.properties === null || (typeof feature.properties === 'object' && !Array.isArray(feature.properties)))) return false;
+  const rings = feature.geometry.coordinates;
+  return Array.isArray(rings) && rings.length > 0 && rings.every((ring) => {
+    if (!Array.isArray(ring) || ring.length < 4) return false;
+    if (!ring.every((position) => Array.isArray(position) && position.length >= 2
+      && position.every((coordinate) => typeof coordinate === 'number' && Number.isFinite(coordinate)))) return false;
+    const first = ring[0], last = ring[ring.length - 1];
+    return first.length === last.length && first.every((coordinate, index) => coordinate === last[index]);
+  });
 }
 
 export interface DecodeOptions {
