@@ -9,11 +9,11 @@ GET {{Flatserve_HostAddress}}/fgb/collection?userId=2&minX=7.95&minY=58.10&maxX=
 Accept: application/vnd.fgb
 
 ### Greater Kristiansand
-GET {{Flatserve_HostAddress}}/fgb/collection?userId=2minX=7.75&minY=58.0&maxX=8.30&maxY=58.35
+GET {{Flatserve_HostAddress}}/fgb/collection?userId=2&minX=7.75&minY=58.0&maxX=8.30&maxY=58.35
 Accept: application/vnd.fgb
 
 ### Oslo
-GET {{Flatserve_HostAddress}}/fgb/collection?userId=2minX=10.5&minY=59.8&maxX=10.95&maxY=60.05
+GET {{Flatserve_HostAddress}}/fgb/collection?userId=2&minX=10.5&minY=59.8&maxX=10.95&maxY=60.05
 Accept: application/vnd.fgb
 
 ### Single feature
