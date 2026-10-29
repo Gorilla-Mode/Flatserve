@@ -69,7 +69,7 @@ public record FgbDataset
         headerBytes.CopyTo(_exportHeader, Constants.MagicBytes.Length);
     }
 
-    public Byte[] GetBytes(Envelope bbox, Polygon Allowedarea)
+    public Byte[] GetBytes(Envelope bbox, Polygon allowedarea)
     {
         if (_spatialIndex.Length == 0)
             throw new InvalidOperationException("Spatial index is empty");
@@ -108,10 +108,10 @@ public record FgbDataset
             
             var feature = FeatureConversions.FromByteBuffer(factory,
                 sequenceFactory,
-                new ByteBuffer(GetFeatureBytes(pointer)),
+                new ByteBuffer(GetRawFeatureBytes(pointer)),
                 _header);
 
-            if (feature.Geometry is null || !Allowedarea.Intersects(feature.Geometry))
+            if (feature.Geometry is null || !allowedarea.Intersects(feature.Geometry))
             {
                  continue;  
             }
