@@ -19,18 +19,77 @@ async function connect(page: Page) {
 async function assertDetails(page: Page) {
   const dialog = details(page);
   await expect(dialog).toBeVisible();
-  const value = (label: string) => dialog.getByRole('row', { name: new RegExp(`^${label} `) }).getByRole('cell');
+  const value = (label: string) => dialog.getByRole('row').filter({ has: page.getByRole('rowheader', { name: label, exact: true }) }).getByRole('cell');
   const url = await value('API URL').innerText();
   expect(url.startsWith(base)).toBe(true);
   expect(new URL(url).searchParams.size).toBeGreaterThan(0);
   const times = [];
-  for (const name of ['Request time', 'Parse time', 'Total time']) {
+  for (const name of ['HTTP duration', 'Download + decoding', 'Browser total']) {
     await expect(value(name)).toHaveText(/^\d+\.\d ms$/);
     times.push(parseFloat(await value(name).innerText()));
   }
-  expect(Math.abs(times[0] + times[1] - times[2])).toBeLessThanOrEqual(.11);
-  await expect(dialog).toContainText('Parse time includes downloading and decoding the response body.');
+  const network = await page.evaluate((url) => {
+    const entry = performance.getEntriesByName(url, 'resource').at(-1) as PerformanceResourceTiming;
+    return entry.responseEnd - entry.startTime;
+  }, url);
+  expect(times[0]).toBeCloseTo(network, 1);
+  await expect(dialog).toContainText('These measurements overlap and are not additive.');
   return { url, request: times[0], total: times[2] };
+}
+
+for (const empty of [false, true]) {
+  test(`repeated filter activations and previous values each add a request and timing (empty: ${empty})`, async ({ page }) => {
+    await page.route('https://tiles.openfreemap.org/**', (route) => route.fulfill({
+      json: { version: 8, sources: {}, layers: [] },
+    }));
+    const discovery = Buffer.from(encoded([station('A'), station('B')]));
+    // Both values deliberately return identical data to exercise timing independently of map updates.
+    const filtered = empty ? Buffer.from(headerOnly(discovery)) : Buffer.from(encoded([station('match')]));
+    const requests: string[] = [];
+    await page.route('https://timings.example/**', (route) => {
+      const url = route.request().url();
+      if (new URL(url).pathname.endsWith('/filter')) requests.push(url);
+      return route.fulfill({ body: url.includes('/filter?') ? filtered : discovery });
+    });
+    await page.goto('./');
+    await connect(page);
+    const status = page.getByRole('status');
+    const select = page.getByLabel('Brannvesen', { exact: true });
+    const filter = page.getByRole('button', { name: 'Filter', exact: true });
+    const filterPoints = page.locator('.timings-point[aria-label*="/filter?"]');
+    await expect(status).toHaveText('2 features in view');
+    const initialPoints = await points(page).count();
+    await select.selectOption('B');
+    await select.selectOption('A');
+    await expect(filter).toHaveAttribute('aria-pressed', 'false');
+    expect(requests).toHaveLength(0);
+    await expect(points(page)).toHaveCount(initialPoints);
+
+    const activate = async (action: () => Promise<unknown>, value: string) => {
+      const beforeRequests = requests.length;
+      const beforePoints = await points(page).count();
+      await action();
+      await expect.poll(() => requests.length).toBe(beforeRequests + 1);
+      await expect(points(page)).toHaveCount(beforePoints + 1);
+      await expect(filterPoints).toHaveCount(beforeRequests + 1);
+      await expect(status).toHaveText(empty ? 'No features found.' : '1 features matching filter');
+      const url = new URL(requests.at(-1)!);
+      expect(Object.fromEntries(url.searchParams)).toEqual({ attribute: 'brannvesen', value });
+      expect((await points(page).last().getAttribute('aria-label'))!.endsWith(url.href)).toBe(true);
+      await points(page).last().click();
+      expect((await assertDetails(page)).url).toBe(url.href);
+      await details(page).getByRole('button', { name: 'Close' }).click();
+    };
+    await activate(() => filter.click(), 'A');
+    for (let i = 0; i < 2; i++) {
+      await filter.click();
+      await expect(status).toHaveText('2 features in view');
+      await activate(() => filter.click(), 'A');
+    }
+    await activate(() => select.selectOption('B'), 'B');
+    await activate(() => select.selectOption('A'), 'A');
+    expect(requests.filter((url) => new URL(url).searchParams.get('value') === 'A')).toEqual(Array(4).fill(requests[0]));
+  });
 }
 
 test('empty and single-point charts, both metrics, click/keyboard dismissal and reconnect reset', async ({ page }) => {
@@ -53,9 +112,9 @@ test('empty and single-point charts, both metrics, click/keyboard dismissal and 
   await expect(page.locator('.timings-chart')).toHaveText('No completed requests yet');
   await connect(page);
   await expect(points(page)).toHaveCount(1);
-  const toggle = page.getByRole('button', { name: 'Include parsing' });
+  const toggle = page.getByRole('button', { name: 'Browser total', exact: true });
   await expect(toggle).toHaveAttribute('aria-pressed', 'false');
-  await expect(page.locator('.timings-metric')).toHaveText('Request');
+  await expect(page.locator('.timings-metric')).toHaveText('HTTP');
   await expect(page.locator('.timings-axis').first()).toHaveText('ms');
   await expect(page.locator('.timings-axis').nth(1)).toHaveText('0');
   await expect(page.locator('.timings-chart')).toContainText('Calls');
@@ -67,12 +126,12 @@ test('empty and single-point charts, both metrics, click/keyboard dismissal and 
   expect(values.url).toBe(requests[0]);
   await details(page).getByRole('button', { name: 'Close' }).click();
   await expect(points(page)).toBeFocused();
-  await expect(points(page)).toHaveAttribute('aria-label', `Call 1, request: ${values.request.toFixed(1)} ms. ${values.url}`);
+  await expect(points(page)).toHaveAttribute('aria-label', `Call 1, http: ${values.request.toFixed(1)} ms. ${values.url}`);
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-pressed', 'true');
   await expect(toggle).toHaveCSS('border-color', 'rgb(74, 222, 128)');
-  await expect(page.locator('.timings-metric')).toHaveText('Request + parsing');
-  await expect(points(page)).toHaveAttribute('aria-label', `Call 1, request + parsing: ${values.total.toFixed(1)} ms. ${values.url}`);
+  await expect(page.locator('.timings-metric')).toHaveText('Browser total');
+  await expect(points(page)).toHaveAttribute('aria-label', `Call 1, browser total: ${values.total.toFixed(1)} ms. ${values.url}`);
   for (const key of ['Enter', 'Space']) {
     await toggle.focus();
     await page.keyboard.press('Shift+Tab');
@@ -125,7 +184,7 @@ test('retains ten calls and keeps an evicted selection stable with fallback focu
   expect(await page.locator('.timings-point').evaluateAll((elements) => elements.map((element) => element.getAttribute('aria-label')))).not.toContain(label);
   expect(await assertDetails(page)).toEqual(selected);
   await page.keyboard.press('Escape');
-  await expect(page.getByRole('button', { name: 'Include parsing' })).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Browser total', exact: true })).toBeFocused();
   for (const width of [1280, 375, 280]) {
     await page.setViewportSize({ width, height: 700 });
     await expect(page.locator('.timings-call-tick')).toHaveCount(10);
@@ -176,7 +235,46 @@ for (const width of [1280, 375, 280]) {
     await expect(dialog.locator('.timing-url')).toHaveCSS('user-select', 'text');
     await page.screenshot({ path: `test-results/timings-dialog-${width}.png` });
     await dialog.getByRole('button', { name: 'Close' }).click();
-    await page.getByRole('button', { name: 'Include parsing' }).click();
+    await page.getByRole('button', { name: 'Browser total', exact: true }).click();
     expect(requests).toHaveLength(count);
   });
 }
+
+test('unavailable HTTP retains its position and details, breaks lines, and has a browser total', async ({ page }) => {
+  await page.addInitScript(() => {
+    const original = performance.getEntriesByName.bind(performance);
+    performance.getEntriesByName = (name, type) => name.includes('/filter?')
+      && new URL(name).searchParams.get('value') === 'B' ? [] : original(name, type);
+  });
+  await page.route('https://tiles.openfreemap.org/**', (route) => route.fulfill({ json: { version: 8, sources: {}, layers: [] } }));
+  await page.route('https://timings.example/**', (route) => route.fulfill({ body: Buffer.from(encoded([station('A'), station('B')])) }));
+  await page.goto('./');
+  await connect(page);
+  await expect(page.getByRole('status')).toHaveText('2 features in view');
+  const select = page.getByLabel('Brannvesen', { exact: true });
+  await select.selectOption('A');
+  await page.getByRole('button', { name: 'Filter', exact: true }).click();
+  await expect(points(page).last()).toHaveAttribute('aria-label', /value=A$/);
+  const numericTicks = await page.locator('svg > g[aria-hidden="true"]:not(.timings-call-tick) text').allTextContents();
+  await select.selectOption('B');
+  const missing = page.locator('.timings-point').filter({ has: page.locator('.timings-unavailable') });
+  await expect(missing).toHaveCount(1);
+  await expect(missing).toHaveAttribute('aria-label', /http: Unavailable/);
+  await expect(page.locator('.timings-chart')).toContainText('Unavailable');
+  expect(await page.locator('svg > g[aria-hidden="true"]:not(.timings-call-tick) text').allTextContents()).toEqual(numericTicks);
+  expect(await missing.locator('rect').getAttribute('y')).toBe('206');
+  await select.selectOption('A');
+  await expect(points(page).last()).toHaveAttribute('aria-label', /value=A$/);
+  const count = await points(page).count();
+  await expect(page.locator('.timings-line')).toHaveCount(count - 3);
+  await missing.focus();
+  await page.keyboard.press('Enter');
+  await expect(details(page).getByRole('row', { name: /^HTTP duration / }).getByRole('cell')).toHaveText('Unavailable');
+  await expect(details(page).getByRole('row', { name: /^Browser total / }).getByRole('cell')).toHaveText(/^\d+\.\d ms$/);
+  await page.keyboard.press('Escape');
+  await expect(missing).toBeFocused();
+  await page.getByRole('button', { name: 'Browser total', exact: true }).click();
+  await expect(page.locator('.timings-unavailable')).toHaveCount(0);
+  await expect(page.locator('.timings-line')).toHaveCount(count - 1);
+  await expect(points(page)).toHaveCount(count);
+});

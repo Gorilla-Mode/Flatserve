@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Feature } from 'geojson';
-import type { DecodeOptions } from './api';
+import type { DecodeOptions, RequestTiming } from './api';
 import { DatasetSession, distinctBrannvesen } from './session';
 import { expandBounds, viewportBounds, WORLD } from './bounds';
 import { station } from '../tests/fixtures';
@@ -15,9 +15,9 @@ const observers = () => ({
 const area = (west = 0, east = 10) => viewportBounds(west, 50, east, 60);
 
 describe('session timings', () => {
-  const timing = (url: URL) => ({ url: url.href, requestMs: 10, parseMs: 20, totalMs: 30 });
+  const timing = (url: URL): RequestTiming => ({ url: url.href, httpMs: 10, downloadDecodeMs: 20, totalMs: 30 });
 
-  it('records concurrent discovery and multipart calls in completion order, excluding reuse and cache hits', async () => {
+  it('records concurrent discovery, multipart calls and repeated filters, excluding spatial reuse', async () => {
     let records: TimingRecord[] = [];
     const observer = { ...observers(), onTiming: (value: ReturnType<typeof timing>) => { records = timingHistory(records, value); } };
     const { read, calls } = pendingReader();
@@ -40,9 +40,12 @@ describe('session timings', () => {
     const filter = session.setFilter('Oslo');
     complete(3);
     await filter;
-    await session.setFilter('Oslo');
-    expect(calls).toHaveLength(4);
-    expect(records).toHaveLength(4);
+    const repeated = session.setFilter('Oslo');
+    complete(4);
+    await repeated;
+    expect(calls).toHaveLength(5);
+    expect(records).toHaveLength(5);
+    expect(records[4].url).toBe(records[3].url);
   });
 
   it('rejects late callbacks from cancelled and disposed requests, including discovery', async () => {
@@ -100,7 +103,7 @@ describe('coverage notifications', () => {
     await session.setFilter('', area(4, 6));
     await session.setFilter('', area(4, 6), false);
     await session.setFilter('Oslo');
-    await session.setFilter('Oslo'); // Cached filters still have no spatial coverage.
+    await session.setFilter('Oslo'); // Repeated filters still have no spatial coverage.
     await session.setFilter('');
     session.dispose();
     expect(observer.onCoverage.mock.calls).toEqual([
@@ -177,7 +180,7 @@ describe('buffered live updates', () => {
     expect(read.mock.lastCall?.[0].searchParams.get('maxX')).toBe('11');
   });
 
-  it('preserves Buffer through filter/cache and bbox changes and Retry', async () => {
+  it('preserves Buffer through repeated filters and bbox changes and Retry', async () => {
     const read = vi.fn().mockResolvedValue([station('Oslo', 8)]);
     const session = new DatasetSession('https://example.org', observers(), read);
     await session.setFilter('', area(), false);
@@ -188,7 +191,7 @@ describe('buffered live updates', () => {
     expect(read.mock.lastCall?.[0].searchParams.get('minX')).toBe('7');
     const before = read.mock.calls.length;
     await session.setFilter('Oslo');
-    expect(read).toHaveBeenCalledTimes(before);
+    expect(read).toHaveBeenCalledTimes(before + 1);
     await session.setFilter('', area());
     expect(read.mock.lastCall?.[0].searchParams.get('minX')).toBe('0');
     await session.setFilter('', area(), true);
@@ -393,7 +396,50 @@ function pendingReader() {
 }
 
 describe('connection sessions', () => {
-  it('cancels spatial and filter requests through rapid toggles without publishing or caching stale results', async () => {
+  it.each(['Oslo', 'empty'])('fetches repeated %s filters and refreshes without republishing identical results', async (selection) => {
+    const observer = observers();
+    const { read, calls } = pendingReader();
+    const session = new DatasetSession('https://example.org', observer, read);
+    const initial = session.setFilter('previous');
+    calls[0].resolve([station('previous')]);
+    await initial;
+    const features = selection === 'empty' ? [] : [station('Oslo')];
+    for (let index = 1; index <= 4; index++) {
+      observer.onFeatures.mockClear();
+      const request = index <= 2 ? session.setFilter(selection) : session.refresh();
+      expect(calls).toHaveLength(index + 1);
+      expect(calls[index].options.cache).toBe('no-store');
+      expect(calls[index].url.href).toBe(calls[1].url.href);
+      expect([...calls[index].url.searchParams.keys()]).toEqual(['attribute', 'value']);
+      expect(observer.onStatus.mock.lastCall?.[0]).toEqual({ loading: true, error: null });
+      expect(observer.onFeatures).not.toHaveBeenCalled();
+      calls[index].resolve(structuredClone(features));
+      await request;
+      if (index === 1) expect(observer.onFeatures).toHaveBeenCalledExactlyOnceWith(features);
+      else expect(observer.onFeatures).not.toHaveBeenCalled();
+      expect(observer.onStatus.mock.lastCall?.[0]).toEqual({ loading: false, error: null });
+    }
+  });
+
+  it.each(['selection', 'refresh'])('recovers from a failed repeat using %s while retaining displayed features', async (retry) => {
+    const observer = observers();
+    const read = vi.fn()
+      .mockResolvedValueOnce([station('Oslo')])
+      .mockRejectedValueOnce(new Error('Offline'))
+      .mockResolvedValueOnce([station('updated Oslo')]);
+    const session = new DatasetSession('https://example.org', observer, read);
+    await session.setFilter('Oslo');
+    observer.onFeatures.mockClear();
+    await session.setFilter('Oslo');
+    expect(observer.onFeatures).not.toHaveBeenCalled();
+    expect(observer.onStatus.mock.lastCall?.[0]).toEqual({ loading: false, error: 'Offline' });
+    await (retry === 'selection' ? session.setFilter('Oslo') : session.refresh());
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(observer.onFeatures).toHaveBeenCalledExactlyOnceWith([station('updated Oslo')]);
+    expect(observer.onStatus.mock.lastCall?.[0]).toEqual({ loading: false, error: null });
+  });
+
+  it('cancels spatial and filter requests through rapid toggles without publishing stale results', async () => {
     const observer = observers();
     const { read, calls } = pendingReader();
     const session = new DatasetSession('https://example.org', observer, read);
@@ -456,9 +502,9 @@ describe('connection sessions', () => {
     await latest;
     expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('current')]);
   });
-  it('caches selected filters (including empty results) and keeps matches while the camera moves', async () => {
+  it('refetches previous filters (including empty results) and keeps matches while the camera moves', async () => {
     const observer = observers();
-    const read = vi.fn(async (url: URL) => url.searchParams.get('value') === 'empty' ? [] : [station('Oslo')]);
+    const read = vi.fn(async (url: URL, _options: DecodeOptions) => url.searchParams.get('value') === 'empty' ? [] : [station('Oslo')]);
     const session = new DatasetSession('https://example.org', observer, read);
     await session.setBounds([WORLD]);
     await session.setFilter('Oslo');
@@ -470,11 +516,14 @@ describe('connection sessions', () => {
     await session.setFilter('empty');
     await session.setFilter('Oslo');
     await session.setFilter('empty');
-    expect(read).toHaveBeenCalledTimes(filteredCount + 1);
+    expect(read).toHaveBeenCalledTimes(filteredCount + 3);
+    expect(read.mock.calls.filter(([url]) => url.pathname === '/fgb/filter')
+      .every(([, options]) => options.cache === 'no-store')).toBe(true);
     expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([]);
     await session.setFilter('');
     expect(read.mock.lastCall?.[0].pathname).toBe('/fgb/collection');
     expect(read.mock.lastCall?.[0].searchParams.get('minX')).toBe('-180');
+    expect(read.mock.lastCall?.[1].cache).toBeUndefined();
   });
   it('does not cancel an in-flight selected filter when the camera moves', async () => {
     const observer = observers();
@@ -534,7 +583,7 @@ describe('connection sessions', () => {
     calls[2].resolve([]);
     await query;
   });
-  it('reports failures and retries without caching partial filter results', async () => {
+  it('reports failures and retries filter requests', async () => {
     const observer = observers();
     const read = vi.fn().mockRejectedValueOnce(new Error('Offline')).mockResolvedValueOnce([station('Oslo')]);
     const session = new DatasetSession('https://example.org', observer, read);

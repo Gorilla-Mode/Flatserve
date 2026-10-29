@@ -64,7 +64,7 @@ export async function expectSidebarLayout(page: Page) {
     await expect(button).toHaveCSS('border-radius', '0px');
   }
   await expect(controls.locator('.request-timings')).toContainText('API requests');
-  await expect(controls.getByRole('button', { name: 'Include parsing', exact: true })).toBeVisible();
+  await expect(controls.getByRole('button', { name: 'Browser total', exact: true })).toBeVisible();
   await expect(controls.locator('.timings-chart svg')).toBeVisible();
   return map;
 }
