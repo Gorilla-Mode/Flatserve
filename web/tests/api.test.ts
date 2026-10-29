@@ -20,6 +20,7 @@ beforeAll(async () => {
 async function check(url: URL, count: number) {
   const response = await fetch(url);
   expect(response.ok).toBe(true);
+  expect(response.headers.get('timing-allow-origin')).toBe('*');
   const bytes = new Uint8Array(await response.arrayBuffer());
   let header: HeaderMeta | undefined;
   const features = await decodeResponse(new Response(new ReadableStream<Uint8Array>({
@@ -96,6 +97,7 @@ describe('live backend FlatGeobuf exports', () => {
   it('allows browser GETs without credentials, and does not allow POST', async () => {
     const response = await fetch(new URL('fgb/feature/0', base), { headers: { Origin: 'https://example.github.io' } });
     expect(response.headers.get('access-control-allow-origin')).toBe('*');
+    expect(response.headers.get('timing-allow-origin')).toBe('*');
     expect(response.headers.get('access-control-allow-credentials')).toBeNull();
     const preflight = await fetch(new URL('fgb/collection', base), {
       method: 'OPTIONS', headers: {
@@ -109,5 +111,12 @@ describe('live backend FlatGeobuf exports', () => {
     expect((await fetch(collectionUrl(base, { minX: 20, minY: 0, maxX: 10, maxY: 10 }, 2))).status).toBe(400);
     expect((await fetch(new URL('fgb/feature/-1', base))).status).toBe(404);
     expect((await fetch(new URL('fgb/feature/639', base))).status).toBe(404);
+  });
+
+  it.each(['fgb/collection', 'fgb/missing'])('exposes resource timing for API errors at %s', async (path) => {
+    const response = await fetch(new URL(path, base), { headers: { Origin: 'https://example.github.io' } });
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(response.headers.get('timing-allow-origin')).toBe('*');
+    expect(response.headers.get('access-control-allow-origin')).toBe('*');
   });
 });

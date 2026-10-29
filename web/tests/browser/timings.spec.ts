@@ -8,6 +8,7 @@ test.use({ hasTouch: true });
 const base = `https://timings.example/${'long-api-path-'.repeat(18)}`;
 const filterName = 'Sør & Øst / '.repeat(25);
 const bytes = Buffer.from(encoded([station(filterName)]));
+const timingHeaders = { 'Timing-Allow-Origin': '*' };
 const points = (page: Page) => page.locator('.timings-point');
 const details = (page: Page) => page.getByRole('dialog', { name: 'Request details' });
 
@@ -30,7 +31,7 @@ async function assertDetails(page: Page) {
   }
   const network = await page.evaluate((url) => {
     const entry = performance.getEntriesByName(url, 'resource').at(-1) as PerformanceResourceTiming;
-    return entry.responseEnd - entry.startTime;
+    return entry.responseEnd - entry.requestStart;
   }, url);
   expect(times[0]).toBeCloseTo(network, 1);
   await expect(dialog).toContainText('These measurements overlap and are not additive.');
@@ -49,7 +50,7 @@ for (const empty of [false, true]) {
     await page.route('https://timings.example/**', (route) => {
       const url = route.request().url();
       if (new URL(url).pathname.endsWith('/filter')) requests.push(url);
-      return route.fulfill({ body: url.includes('/filter?') ? filtered : discovery });
+      return route.fulfill({ body: url.includes('/filter?') ? filtered : discovery, headers: timingHeaders });
     });
     await page.goto('./');
     await connect(page);
@@ -107,7 +108,7 @@ test('empty and single-point charts, both metrics, click/keyboard dismissal and 
   await page.route('https://timings.example/**', async (route) => {
     requests.push(route.request().url());
     if (hold) await held;
-    await route.fulfill({ body: bytes, contentType: 'application/octet-stream' });
+    await route.fulfill({ body: bytes, contentType: 'application/octet-stream', headers: timingHeaders });
   });
   await page.goto('./');
   await expect(page.locator('.timings-chart')).toHaveText('No completed requests yet');
@@ -164,7 +165,7 @@ test('empty and single-point charts, both metrics, click/keyboard dismissal and 
 
 test('retains ten calls and keeps an evicted selection stable with fallback focus', async ({ page }) => {
   await page.route('https://tiles.openfreemap.org/**', (route) => route.fulfill({ json: { version: 8, sources: {}, layers: [] } }));
-  await page.route('https://timings.example/**', (route) => route.fulfill({ body: bytes }));
+  await page.route('https://timings.example/**', (route) => route.fulfill({ body: bytes, headers: timingHeaders }));
   await page.goto('./');
   await connect(page);
   await page.getByLabel('Select user', { exact: true }).selectOption('2');
@@ -206,7 +207,7 @@ for (const width of [1280, 375, 280]) {
     const requests: string[] = [];
     await page.route('https://timings.example/**', (route) => {
       requests.push(route.request().url());
-      return route.fulfill({ body: route.request().url().includes('/filter?') ? Buffer.from(headerOnly(bytes)) : bytes });
+      return route.fulfill({ body: route.request().url().includes('/filter?') ? Buffer.from(headerOnly(bytes)) : bytes, headers: timingHeaders });
     });
     await page.goto('./');
     await connect(page);
@@ -250,7 +251,7 @@ test('unavailable HTTP retains its position and details, breaks lines, and has a
       && new URL(name).searchParams.get('value') === 'B' ? [] : original(name, type);
   });
   await page.route('https://tiles.openfreemap.org/**', (route) => route.fulfill({ json: { version: 8, sources: {}, layers: [] } }));
-  await page.route('https://timings.example/**', (route) => route.fulfill({ body: Buffer.from(encoded([station('A'), station('B')])) }));
+  await page.route('https://timings.example/**', (route) => route.fulfill({ body: Buffer.from(encoded([station('A'), station('B')])), headers: timingHeaders }));
   await page.goto('./');
   await connect(page);
   await page.getByLabel('Select user', { exact: true }).selectOption('2');

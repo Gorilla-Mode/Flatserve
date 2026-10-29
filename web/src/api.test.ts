@@ -108,7 +108,7 @@ describe('request timing', () => {
     const url = filterUrl('https://example.org/proxy', 'Sør & Øst');
     vi.spyOn(performance, 'getEntriesByName').mockImplementation(() => {
       clock += 1000; // Timing lookup must not inflate browser total.
-      return [resource(url.href, 110, 210)];
+      return [resource(url.href, 110, 210, 140)];
     }).mockReturnValueOnce([]);
     const result = fetchFeatures(url, { signal: new AbortController().signal, onTiming, onHeader,
       onBatch: () => { clock += delay; } });
@@ -122,7 +122,18 @@ describe('request timing', () => {
     clock = 245;
     body.close();
     expect(await result).toHaveLength(empty ? 0 : 3);
-    expect(onTiming).toHaveBeenCalledExactlyOnceWith({ url: url.href, httpMs: 100, downloadDecodeMs: 120 + delay, totalMs: 145 + delay });
+    expect(onTiming).toHaveBeenCalledExactlyOnceWith({ url: url.href, httpMs: 70, downloadDecodeMs: 120 + delay, totalMs: 145 + delay });
+  });
+
+  it('keeps browser total and download + decoding when request timestamps are masked', async () => {
+    let clock = 100;
+    vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    const url = filterUrl('https://example.org', 'Oslo');
+    vi.spyOn(performance, 'getEntriesByName').mockReturnValue([resource(url.href, 110, 210, 0)]).mockReturnValueOnce([]);
+    vi.stubGlobal('fetch', vi.fn(async () => { clock = 125; return chunked(encoded()); }));
+    const onTiming = vi.fn();
+    await fetchFeatures(url, { signal: new AbortController().signal, onTiming, onBatch: () => { clock = 245; } });
+    expect(onTiming).toHaveBeenCalledExactlyOnceWith({ url: url.href, httpMs: null, downloadDecodeMs: 120, totalMs: 145 });
   });
 
   it.each(['http', 'decode', 'network', 'abort-fetch', 'abort-body', 'already-aborted'])(
@@ -228,16 +239,23 @@ describe('progressive FlatGeobuf decoding', () => {
   });
 });
 
-function resource(name: string, startTime: number, responseEnd: number, initiatorType = 'fetch'): PerformanceResourceTiming {
+function resource(name: string, startTime: number, responseEnd: number, requestStart = startTime, initiatorType = 'fetch'): PerformanceResourceTiming {
   return { name, entryType: 'resource', startTime, responseEnd, initiatorType,
-    requestStart: 0, responseStart: 0, connectStart: 0, domainLookupStart: 0,
+    requestStart, responseStart: 0, connectStart: 0, domainLookupStart: 0,
   } as PerformanceResourceTiming;
 }
 
 describe('HTTP Resource Timing attribution', () => {
   const url = 'https://cross-origin.example/fgb/filter?value=A';
-  it('uses start and end even when cross-origin detailed fields are restricted', () => {
-    expect(httpDuration([resource(url, 110, 210)], url, 100, 245)).toBe(100);
+  it.each([110, 140, 200])('measures the HTTP exchange from requestStart %s, excluding earlier browser delays', (requestStart) => {
+    expect(httpDuration([resource(url, 110, 210, requestStart)], url, 100, 245)).toBe(210 - requestStart);
+  });
+  it('returns unavailable when requestStart is missing', () => {
+    const { requestStart: _requestStart, ...entry } = resource(url, 110, 210);
+    expect(httpDuration([entry as PerformanceEntry], url, 100, 245)).toBeNull();
+  });
+  it.each([0, -1, NaN, Infinity, -Infinity, 109, 210, 211])('returns unavailable for a masked or invalid requestStart (%s)', (requestStart) => {
+    expect(httpDuration([resource(url, 110, 210, requestStart)], url, 100, 245)).toBeNull();
   });
   it('excludes entries already present even when timestamps have been rounded', () => {
     const old = resource(url, 100, 120);
@@ -246,7 +264,7 @@ describe('HTTP Resource Timing attribution', () => {
   });
   it('excludes earlier entries for repeated URLs and other URLs or initiators', () => {
     expect(httpDuration([resource(url, 10, 90), resource(url, 110, 210),
-      resource(url + 'B', 120, 220), resource(url, 120, 220, 'xmlhttprequest')], url, 100, 245)).toBe(100);
+      resource(url + 'B', 120, 220), resource(url, 120, 220, 120, 'xmlhttprequest')], url, 100, 245)).toBe(100);
   });
   it.each([[], [resource(url, 10, 90)], [resource(url, 110, 210), resource(url, 120, 220)],
     [resource(url, 110, 0)], [resource(url, 110, 110)], [resource(url, 110, 109)],

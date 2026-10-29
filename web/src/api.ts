@@ -154,9 +154,11 @@ export function httpDuration(
     && (entry as PerformanceResourceTiming).initiatorType === 'fetch'
     && entry.startTime >= started && entry.startTime <= finished) as PerformanceResourceTiming[];
   if (matches.length !== 1) return null;
-  const { startTime, responseEnd } = matches[0];
-  return Number.isFinite(startTime) && Number.isFinite(responseEnd)
-    && responseEnd > startTime && responseEnd <= finished ? responseEnd - startTime : null;
+  const { startTime, requestStart, responseEnd } = matches[0];
+  // Cross-origin timing restrictions mask requestStart as zero, even when responseEnd is visible.
+  return Number.isFinite(startTime) && Number.isFinite(requestStart) && Number.isFinite(responseEnd)
+    && requestStart > 0 && requestStart >= startTime && responseEnd > requestStart
+    && responseEnd <= finished ? responseEnd - requestStart : null;
 }
 
 // Entries alone cannot disambiguate a same-URL fetch whose body is still in flight.
