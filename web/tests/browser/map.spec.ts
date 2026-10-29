@@ -69,6 +69,7 @@ test('Show buffer draws fetched coverage, stays fixed during reuse and pending w
   await expect(show).toHaveAttribute('title', /red.*fetched.*coverage/);
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(page.getByRole('status')).toHaveText('639 features in view');
   await expect(show).toBeDisabled();
   const bbox = page.getByRole('button', { name: 'BBox', exact: true });
@@ -177,6 +178,7 @@ test('preserves Show buffer through prerequisites and reconnections, hiding cove
   const show = page.getByRole('button', { name: 'Show buffer', exact: true });
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(show).toBeDisabled();
   releaseStyle();
   await expect(page.getByRole('status')).toHaveText('639 features in view');
@@ -213,6 +215,7 @@ test('preserves Show buffer through prerequisites and reconnections, hiding cove
   });
   await page.locator('.controls').getByRole('button', { name: 'Connect', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(page.getByRole('status')).toContainText('Loading');
   await expect(show).toHaveAttribute('aria-pressed', 'true');
   expect((await redOutline(page)).count).toBe(0);
@@ -233,6 +236,7 @@ test('connects, loads stations, preserves filters through camera moves, and prom
   await expect(page.getByLabel('API URL', { exact: true })).toHaveValue('http://localhost:5220');
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(page.getByRole('dialog')).not.toBeVisible();
   await expect(page.getByRole('status')).toHaveText('639 features in view');
   await expect(page.locator('.maplibregl-canvas')).toBeVisible();
@@ -279,6 +283,7 @@ test('toggles filtering, updates active selections immediately, restores spatial
   await expect(filter).toHaveAttribute('aria-pressed', 'false');
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(page.getByRole('status')).toHaveText('639 features in view');
   await expect(filter).toBeDisabled();
   await expect(select).toHaveValue('');
@@ -331,6 +336,7 @@ test('toggles filtering, updates active selections immediately, restores spatial
   expect(requests.filter((url) => url.includes('/filter?'))).toHaveLength(4);
   await page.locator('.controls').getByRole('button', { name: 'Connect', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(select).toHaveValue('');
   await expect(filter).toBeDisabled();
   await expect(filter).toHaveAttribute('aria-pressed', 'false');
@@ -350,6 +356,7 @@ for (const action of ['change selection', 'toggle off', 'reconnect'] as const) {
     await page.goto('./');
     await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
     await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+    await page.getByLabel('Select user', { exact: true }).selectOption('2');
     await expect(page.getByRole('status')).toHaveText('639 features in view');
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
@@ -361,7 +368,7 @@ for (const action of ['change selection', 'toggle off', 'reconnect'] as const) {
       if (new URL(route.request().url()).searchParams.get('value') !== 'Oslo brann- og redningsetat') return route.continue();
       delayedUrl = route.request().url();
       // Empty results make an incorrectly accepted late response observable.
-      const response = await route.fetch({ url: 'http://localhost:5221/fgb/collection?minX=-1&minY=-1&maxX=1&maxY=1' });
+      const response = await route.fetch({ url: 'http://localhost:5221/fgb/collection?userId=2&minX=-1&minY=-1&maxX=1&maxY=1' });
       await held;
       await route.fulfill({ response });
       finished = true;
@@ -380,6 +387,7 @@ for (const action of ['change selection', 'toggle off', 'reconnect'] as const) {
     } else {
       await page.locator('.controls').getByRole('button', { name: 'Connect', exact: true }).click();
       await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+      await page.getByLabel('Select user', { exact: true }).selectOption('2');
       await expect(select).toHaveValue('');
     }
     const expected = action === 'change selection' ? '7 features matching filter' : '639 features in view';
@@ -399,6 +407,7 @@ test('Filter stays clickable after errors and can retry by toggling off and on',
   await page.goto('./');
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(page.getByRole('status')).toHaveText('639 features in view');
   await page.getByLabel('Brannvesen', { exact: true }).selectOption({ label: 'Oslo brann- og redningsetat' });
   const filter = page.getByRole('button', { name: 'Filter', exact: true });
@@ -422,6 +431,7 @@ test('validates the URL and changes a connection while preserving its base path'
   await expect(page.getByRole('alert')).toHaveText('Enter an absolute HTTP(S) API URL.');
   await input.fill('http://localhost:5221');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(page.getByRole('status')).toHaveText('639 features in view');
   await page.locator('.controls').getByRole('button', { name: 'Connect', exact: true }).click();
   const paths: string[] = [];
@@ -433,6 +443,7 @@ test('validates the URL and changes a connection while preserving its base path'
   });
   await input.fill('http://localhost:5221/proxy/v1');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(page.getByRole('status')).toHaveText('639 features in view');
   await expect(page.locator('.api-url')).toHaveText('http://localhost:5221/proxy/v1/');
   await expect.poll(() => paths.length).toBeGreaterThanOrEqual(2);
@@ -446,6 +457,7 @@ test('fits on a phone viewport without horizontal overflow', async ({ page }) =>
   await expect(page.getByRole('dialog')).toBeVisible();
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(page.getByRole('status')).toHaveText('639 features in view');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
@@ -461,13 +473,14 @@ test('shows empty results, reports request errors, and retries', async ({ page }
       failures++;
       await route.fulfill({ status: 503, body: 'Unavailable', headers: { 'Access-Control-Allow-Origin': '*' } });
     } else {
-      const response = await route.fetch({ url: 'http://localhost:5221/fgb/collection?minX=-1&minY=-1&maxX=1&maxY=1' });
+      const response = await route.fetch({ url: 'http://localhost:5221/fgb/collection?userId=2&minX=-1&minY=-1&maxX=1&maxY=1' });
       await route.fulfill({ response });
     }
   });
   await page.goto('./');
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(page.getByRole('status')).toHaveText('No features found.');
   mode = 'error';
   // Zooming in stays inside the empty successful buffer. Zoom out to exceed it.
@@ -495,6 +508,7 @@ test('bbox follows the camera, survives filters, wraps on mobile, and restores v
   await expect(bbox).toHaveAttribute('aria-pressed', 'false');
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(page.getByRole('status')).toHaveText('639 features in view');
   await expect(bbox).toBeEnabled();
   await page.waitForTimeout(350);
@@ -576,6 +590,7 @@ test('turning bbox off cancels a delayed request and ignores its late response',
   await page.goto('./');
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(page.getByRole('status')).toHaveText('639 features in view');
   await page.waitForTimeout(350);
   let release!: () => void;
@@ -620,6 +635,7 @@ for (const useBbox of [false, true]) {
     await page.goto('./');
     await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
     await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+    await page.getByLabel('Select user', { exact: true }).selectOption('2');
     await expect(page.getByRole('status')).toHaveText('639 features in view');
     await expect(page.getByLabel('Brannvesen', { exact: true })).toBeVisible();
     await page.waitForTimeout(200);
@@ -676,6 +692,7 @@ test('requests new coverage while wheel scrolling is still ongoing', async ({ pa
   await page.goto('./');
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(page.getByRole('status')).toHaveText('639 features in view');
   await page.getByRole('button', { name: 'BBox', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
@@ -710,6 +727,7 @@ for (const useBbox of [false, true]) {
     await expect(buffer).toHaveAttribute('aria-pressed', 'true');
     await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
     await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+    await page.getByLabel('Select user', { exact: true }).selectOption('2');
     await expect(page.getByRole('status')).toHaveText('639 features in view');
     await expect(buffer).toBeEnabled();
     const bboxResponse = page.waitForResponse((response) => response.url().includes('/fgb/collection?'));
@@ -745,7 +763,7 @@ for (const useBbox of [false, true]) {
       if (!delayNext) return route.continue();
       delayNext = false;
       delayedUrl = route.request().url();
-      const response = await route.fetch({ url: 'http://localhost:5221/fgb/collection?minX=-1&minY=-1&maxX=1&maxY=1' });
+      const response = await route.fetch({ url: 'http://localhost:5221/fgb/collection?userId=2&minX=-1&minY=-1&maxX=1&maxY=1' });
       await held;
       await route.fulfill({ response });
       finished = true;
@@ -775,6 +793,7 @@ test('preserves Buffer across filters, bbox changes and reconnects, then resets 
   const buffer = page.getByRole('button', { name: 'Buffer', exact: true });
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(buffer).toBeDisabled();
   releaseStyle();
   await expect(buffer).toBeEnabled();
@@ -794,6 +813,7 @@ test('preserves Buffer across filters, bbox changes and reconnects, then resets 
   await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
   await page.locator('.controls').getByRole('button', { name: 'Connect', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(buffer).toHaveAttribute('aria-pressed', 'false');
   await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
   await page.reload();
@@ -817,6 +837,7 @@ for (const width of [1280, 280, 375]) {
     await page.screenshot({ path: `test-results/dialog-${width}.png` });
     await input.fill('http://localhost:5221');
     await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+    await page.getByLabel('Select user', { exact: true }).selectOption('2');
     await expect(page.getByRole('status')).toHaveText('639 features in view');
     await expect(page.getByLabel('Brannvesen', { exact: true })).toBeVisible();
     await expectSidebarLayout(page);

@@ -1,4 +1,5 @@
 using Flatserve.Fgb;
+using Flatserve.User;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 using NetTopologySuite.Geometries;
@@ -12,6 +13,7 @@ public class FlatGeobufController(FgbDataset fgbDataset) : ControllerBase
     [HttpGet]
     [Route("collection")]
     public IActionResult Collection(
+        [FromQuery, BindRequired] int userId,
         [FromQuery, BindRequired] double minX,
         [FromQuery, BindRequired] double minY,
         [FromQuery, BindRequired] double maxX,
@@ -28,8 +30,14 @@ public class FlatGeobufController(FgbDataset fgbDataset) : ControllerBase
             return BadRequest("Minimum coordinates must not exceed maximum coordinates.");
         }
 
+        if (!UserCollection.Users.TryGetValue(userId, out var user))
+        {
+            return BadRequest($"User with ID {userId} not found.");
+        }
+
         var bbox = new Envelope(minX, maxX, minY, maxY);
-        return File(fgbDataset.GetBytes(bbox), "application/vnd.fgb");
+        
+        return File(fgbDataset.GetBytes(bbox, user.AuthPolygon), "application/vnd.fgb");
     }
 
     [HttpGet]
@@ -49,5 +57,18 @@ public class FlatGeobufController(FgbDataset fgbDataset) : ControllerBase
         [FromQuery, BindRequired]string value)
     {
         return File(fgbDataset.FilterTextAttribute(attribute, value), "application/vnd.fgb");
+    }
+    
+    [HttpGet]
+    [Route("auth-polygon/{userId:int}")]
+    public IActionResult GetAuthPolygon(
+        [FromRoute, BindRequired] int userId)
+    {
+        if (!UserCollection.Users.TryGetValue(userId, out var user))
+        {
+            return BadRequest($"User with ID {userId} not found.");
+        }
+
+        return Content(user.AuthPolygonGeoJson(), "application/geo+json");
     }
 }

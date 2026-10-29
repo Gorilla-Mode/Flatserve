@@ -1,8 +1,9 @@
 import type { Feature } from 'geojson';
 import { collectionUrl, errorMessage, fetchFeatures, filterUrl } from './api';
 import type { HeaderMeta, RequestTiming } from './api';
-import { containsBounds, containsPoint, expandBounds, WORLD } from './bounds';
+import { containsBounds, expandBounds, WORLD } from './bounds';
 import type { Bounds } from './bounds';
+import { geometryIntersectsBounds } from './geometry';
 
 interface Observer {
   onFeatures: (features: Feature[]) => void;
@@ -26,6 +27,7 @@ export class DatasetSession {
   private discoveryRequest?: AbortController;
   private generation = 0;
   private disposed = false;
+  private userId: number | null = null;
   private selection = '';
   private bufferEnabled = true;
   private bounds: Bounds[] = [];
@@ -49,7 +51,7 @@ export class DatasetSession {
     const current = () => !this.disposed && !request.signal.aborted;
     this.observer.onDiscovery({ loading: true, error: null });
     try {
-      const features = await this.read(collectionUrl(this.base, WORLD), {
+      const features = await this.read(collectionUrl(this.base, WORLD, 2), {
         signal: request.signal,
         onHeader: (header) => { if (current()) this.observer.onHeader(header); },
         onTiming: (timing) => { if (current()) this.observer.onTiming?.(timing); },
@@ -76,6 +78,14 @@ export class DatasetSession {
     return this.refresh();
   }
 
+  setUser(userId: number | null): Promise<void> {
+    if (this.disposed || this.userId === userId) return Promise.resolve();
+    this.userId = userId;
+    this.features = [];
+    this.publish();
+    return this.refresh();
+  }
+
   private cancelView(): void {
     this.generation++;
     this.viewRequest?.abort();
@@ -96,7 +106,7 @@ export class DatasetSession {
   /** Publish only a changed visible subset; movement never changes filter matches. */
   private publish(): void {
     const visible = this.selection ? this.features : this.features.filter((feature) =>
-      feature.geometry?.type === 'Point' && containsPoint(this.bounds, feature.geometry.coordinates));
+      geometryIntersectsBounds(feature.geometry, this.bounds));
     const signature = JSON.stringify(visible);
     if (signature === this.displayed) return;
     this.displayed = signature;
@@ -105,6 +115,11 @@ export class DatasetSession {
 
   private schedule(): Promise<void> {
     if (this.disposed) return Promise.resolve();
+    const userId = this.userId;
+    if (userId === null) {
+      this.observer.onStatus({ loading: false, error: null });
+      return Promise.resolve();
+    }
     // Movement only updates the desired bounds while one logical request is active.
     if (this.viewRequest) return this.pending!;
     const selection = this.selection;
@@ -116,7 +131,7 @@ export class DatasetSession {
     const target = selection || JSON.stringify(requestBounds);
     if ((!selection && !requestBounds.length) || target === this.failedTarget) return Promise.resolve();
     const urls = selection ? [filterUrl(this.base, selection)]
-      : requestBounds.map((bounds) => collectionUrl(this.base, bounds));
+      : requestBounds.map((bounds) => collectionUrl(this.base, bounds, userId));
     const generation = this.generation;
     const request = new AbortController();
     this.viewRequest = request;

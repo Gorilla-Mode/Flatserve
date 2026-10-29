@@ -3,8 +3,8 @@ import type { FormEvent } from 'react';
 import { Map as MapLibreMap, Marker, NavigationControl, setWorkerUrl } from 'maplibre-gl';
 import type { GeoJSONSource } from 'maplibre-gl';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
-import type { Feature, FeatureCollection } from 'geojson';
-import { errorMessage, normalizeApiUrl } from './api';
+import type { Feature, FeatureCollection, Polygon } from 'geojson';
+import { errorMessage, fetchAuthorizedArea, normalizeApiUrl } from './api';
 import { coverageOutline, insetBounds, viewportBounds } from './bounds';
 import type { Bounds } from './bounds';
 import { DatasetSession } from './session';
@@ -36,6 +36,15 @@ export function App() {
   const [connection, setConnection] = useState<{ url: string; id: number } | null>(null);
   const [timings, recordTiming] = useReducer(timingHistory, []);
   const [connectionOpen, setConnectionOpen] = useState(true);
+  const [selectedUser, setSelectedUser] = useState<number | null>(null);
+  const [authorizedAreaEnabled, setAuthorizedAreaEnabled] = useState(false);
+  const [authorizedArea, setAuthorizedArea] = useState<{
+    connection: NonNullable<typeof connection>; userId: number; feature: Feature<Polygon>;
+  } | null>(null);
+  const authorizedAreaCache = useRef<typeof authorizedArea>(null);
+  const [authorizedAreaStatus, setAuthorizedAreaStatus] = useState({ loading: false, error: null as string | null });
+  const [authorizedAreaRetry, retryAuthorizedArea] = useReducer((attempt: number) => attempt + 1, 0);
+  const canShowAuthorizedArea = !!connection && mapReady && selectedUser !== null;
   const [selectedBrannvesen, setSelectedBrannvesen] = useState('');
   const [filterEnabled, setFilterEnabled] = useState(false);
   const selection = filterEnabled ? selectedBrannvesen : '';
@@ -69,6 +78,36 @@ export function App() {
     instance.addControl(new NavigationControl(), 'bottom-right');
     instance.on('error', (event) => setMapError(`Basemap: ${event.error.message}`));
     instance.on('load', () => {
+      instance.addSource('stations', { type: 'geojson', data: collection(featuresRef.current) });
+      instance.addLayer({
+        id: 'dataset-polygons', type: 'fill', source: 'stations',
+        filter: ['==', ['geometry-type'], 'Polygon'],
+        paint: { 'fill-color': '#bb342a', 'fill-opacity': 0.18 },
+      });
+      instance.addLayer({
+        id: 'dataset-lines', type: 'line', source: 'stations',
+        filter: ['==', ['geometry-type'], 'LineString'],
+        paint: { 'line-color': '#bb342a', 'line-width': 2 },
+      });
+      instance.addLayer({
+        id: 'stations', type: 'circle', source: 'stations',
+        filter: ['==', ['geometry-type'], 'Point'],
+        paint: {
+          'circle-radius': 5,
+          'circle-color': '#bb342a',
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': 1.5,
+        },
+      });
+      instance.addSource('authorized-area', { type: 'geojson', data: collection([]) });
+      instance.addLayer({
+        id: 'authorized-area-fill', type: 'fill', source: 'authorized-area',
+        paint: { 'fill-color': '#38bdf8', 'fill-opacity': 0.12 },
+      });
+      instance.addLayer({
+        id: 'authorized-area-outline', type: 'line', source: 'authorized-area',
+        paint: { 'line-color': '#38bdf8', 'line-width': 2 },
+      });
       instance.addSource('query-bbox', { type: 'geojson', data: collection([]) });
       instance.addLayer({
         id: 'query-bbox', type: 'line', source: 'query-bbox',
@@ -79,16 +118,6 @@ export function App() {
         id: 'fetched-buffer', type: 'line', source: 'fetched-buffer',
         paint: { 'line-color': bufferColor, 'line-width': 3 },
       });
-      instance.addSource('stations', { type: 'geojson', data: collection(featuresRef.current) });
-      instance.addLayer({
-        id: 'stations', type: 'circle', source: 'stations',
-        paint: {
-          'circle-radius': 5,
-          'circle-color': '#bb342a',
-          'circle-stroke-color': '#ffffff',
-          'circle-stroke-width': 1.5,
-        },
-      });
       setMapReady(true);
     });
     return () => {
@@ -96,6 +125,34 @@ export function App() {
       map.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    if (authorizedAreaCache.current?.connection !== connection || authorizedAreaCache.current?.userId !== selectedUser) {
+      authorizedAreaCache.current = null;
+      setAuthorizedArea(null);
+    }
+    setAuthorizedAreaStatus({ loading: false, error: null });
+    if (!authorizedAreaEnabled || !connection || !mapReady || selectedUser === null || authorizedAreaCache.current) return;
+    const controller = new AbortController();
+    setAuthorizedAreaStatus({ loading: true, error: null });
+    void fetchAuthorizedArea(connection.url, selectedUser, controller.signal).then((feature) => {
+      if (controller.signal.aborted) return;
+      const loaded = { connection, userId: selectedUser, feature };
+      authorizedAreaCache.current = loaded;
+      setAuthorizedArea(loaded);
+      setAuthorizedAreaStatus({ loading: false, error: null });
+    }).catch((error: unknown) => {
+      if (!controller.signal.aborted) setAuthorizedAreaStatus({ loading: false, error: errorMessage(error) });
+    });
+    return () => { controller.abort(); };
+  }, [connection, selectedUser, mapReady, authorizedAreaEnabled, authorizedAreaRetry]);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    const visible = authorizedAreaEnabled && authorizedArea?.connection === connection && authorizedArea.userId === selectedUser;
+    (map.current?.getSource('authorized-area') as GeoJSONSource | undefined)
+      ?.setData(collection(visible ? [authorizedArea.feature] : []));
+  }, [mapReady, authorizedAreaEnabled, authorizedArea, connection, selectedUser]);
 
   useEffect(() => {
     if (!connection) return;
@@ -187,6 +244,10 @@ export function App() {
     };
   }, [connection, mapReady, bboxActive, selection, bufferEnabled]);
 
+  useEffect(() => {
+    void session.current?.setUser(selectedUser);
+  }, [connection, selectedUser]);
+
   const countLabel = `${count.toLocaleString()} features${selection ? ' matching filter' : bboxActive ? ' in bbox' : ' in view'}`;
 
   return (
@@ -218,12 +279,34 @@ export function App() {
                 </li>
               </ul>
             </li>
+            <li>
+              <label htmlFor="user">Select user</label>
+              <select id="user" value={selectedUser ?? ''} onChange={(event) => {
+                setSelectedUser(Number(event.target.value));
+              }}>
+                <option value="" disabled>Select user…</option>
+                <option value="0">Agder</option>
+                <option value="1">Oslo</option>
+                <option value="2">Norway</option>
+              </select>
+              <ul>
+                <li>
+                  <button disabled={!canShowAuthorizedArea} aria-pressed={authorizedAreaEnabled}
+                    onClick={() => setAuthorizedAreaEnabled(!authorizedAreaEnabled)}>Show authorized area</button>
+                  {authorizedAreaStatus.loading && <small aria-live="polite">Loading authorized area…</small>}
+                  {authorizedAreaStatus.error && <div className="error" role="alert">
+                    {authorizedAreaStatus.error} <button onClick={retryAuthorizedArea}>Retry authorized area</button>
+                  </div>}
+                </li>
+              </ul>
+            </li>
           </ul>
         </section>
         <section className="sidebar-section" aria-labelledby="status-heading">
           <h2 id="status-heading">Status</h2>
           <div className="status" role="status" aria-live="polite">
             {!connection ? 'Connect to an API to view fire stations.'
+              : selectedUser === null ? 'Select a user to load stations.'
               : status.loading ? `Loading… ${countLabel}`
               : status.error ? `${countLabel} loaded`
               : bboxActive ? countLabel
@@ -238,7 +321,7 @@ export function App() {
         </section>
         <form className="sidebar-section filter-panel" aria-labelledby="filter-heading" onSubmit={(event) => {
           event.preventDefault();
-          if (values.includes(selectedBrannvesen)) setFilterEnabled((enabled) => !enabled);
+          if (selectedUser !== null && values.includes(selectedBrannvesen)) setFilterEnabled((enabled) => !enabled);
         }}>
           <h2 id="filter-heading">Filter</h2>
           <ul className="control-tree filter-tree">
@@ -252,7 +335,7 @@ export function App() {
               </select>
               <ul>
                 <li>
-                  <button type="submit" disabled={!values.includes(selectedBrannvesen)} aria-pressed={filterEnabled}>Filter</button>
+                  <button type="submit" disabled={selectedUser === null || !values.includes(selectedBrannvesen)} aria-pressed={filterEnabled}>Filter</button>
                 </li>
               </ul>
             </li>
@@ -265,7 +348,11 @@ export function App() {
       </section>
       <div ref={mapContainer} className="map" aria-label="Map of fire stations" />
       <ConnectionDialog open={connectionOpen} initialUrl={connection?.url ?? 'http://localhost:5220'}
-        canDismiss={!!connection} onClose={() => setConnectionOpen(false)} onConnect={(url) => {
+        onClose={() => setConnectionOpen(false)} onConnect={(url) => {
+          if (connection) setSelectedUser(null);
+          setAuthorizedAreaEnabled(false);
+          authorizedAreaCache.current = null;
+          setAuthorizedArea(null);
           setSelectedBrannvesen('');
           setFilterEnabled(false);
           session.current?.dispose();
@@ -277,8 +364,8 @@ export function App() {
   );
 }
 
-function ConnectionDialog({ open, initialUrl, canDismiss, onClose, onConnect }: {
-  open: boolean; initialUrl: string; canDismiss: boolean;
+function ConnectionDialog({ open, initialUrl, onClose, onConnect }: {
+  open: boolean; initialUrl: string;
   onClose: () => void; onConnect: (url: string) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -296,10 +383,7 @@ function ConnectionDialog({ open, initialUrl, canDismiss, onClose, onConnect }: 
     try { onConnect(normalizeApiUrl(url)); }
     catch (error) { setError(errorMessage(error)); }
   }
-  return <dialog ref={dialog} aria-labelledby="connection-title" onCancel={(event) => {
-    if (!canDismiss) event.preventDefault();
-    else onClose();
-  }}>
+  return <dialog ref={dialog} aria-labelledby="connection-title" onCancel={onClose}>
     <form onSubmit={submit}>
       <h1 id="connection-title">Connect to Flatserve</h1>
       <p>Enter the API URL to explore Norway’s fire stations.</p>
@@ -309,7 +393,7 @@ function ConnectionDialog({ open, initialUrl, canDismiss, onClose, onConnect }: 
         onChange={(event) => { setUrl(event.target.value); setError(''); }} />
       {error && <p className="error" id="url-error" role="alert">{error}</p>}
       <div className="dialog-actions">
-        {canDismiss && <button type="button" onClick={onClose}>Cancel</button>}
+        <button type="button" onClick={onClose}>Cancel</button>
         <button type="submit">Connect</button>
       </div>
     </form>

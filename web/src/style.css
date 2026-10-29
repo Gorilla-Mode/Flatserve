@@ -67,7 +67,7 @@ button:hover:not(:disabled) { background: var(--hover); }
 .timing-dialog p { font-size: 12px; }
 .filter-panel { display: grid; gap: 8px; }
 .filter-panel h2 { margin-bottom: 4px; }
-.filter-tree label { display: block; margin-bottom: 8px; }
+.control-tree label { display: block; margin-bottom: 8px; }
 .filter-panel small, dialog p { color: var(--secondary); }
 select { width: 100%; min-width: 0; padding: 8px; }
 option { color: var(--text); background: var(--field); }

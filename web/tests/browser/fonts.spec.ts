@@ -32,6 +32,7 @@ test('Google Fonts loads JetBrains Mono and preserves the live page layout', asy
   }
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByLabel('Select user', { exact: true }).selectOption('2');
   await expect(page.getByRole('status')).toHaveText('639 features in view');
   for (const width of [1280, 375, 280]) {
     await page.setViewportSize({ width, height: 700 });

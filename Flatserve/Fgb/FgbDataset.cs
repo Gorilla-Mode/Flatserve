@@ -5,6 +5,7 @@ using FlatGeobuf.NTS;
 using Flatserve.Index;
 using Google.FlatBuffers;
 using NetTopologySuite.Geometries;
+using Geometry = NetTopologySuite.Geometries.Geometry;
 
 namespace Flatserve.Fgb;
 
@@ -68,7 +69,7 @@ public record FgbDataset
         headerBytes.CopyTo(_exportHeader, Constants.MagicBytes.Length);
     }
 
-    public Byte[] GetBytes(Envelope bbox)
+    public Byte[] GetBytes(Envelope bbox, Polygon allowedArea)
     {
         if (_spatialIndex.Length == 0)
             throw new InvalidOperationException("Spatial index is empty");
@@ -91,6 +92,9 @@ public record FgbDataset
             bbox,
             ReadNode);
         
+        var sequenceFactory = new FlatGeobufCoordinateSequenceFactory();
+        var factory = new GeometryFactory(sequenceFactory);
+        
         foreach (var intersect in intersects)
         {
             ulong payloadLength = BinaryPrimitives.ReadUInt32LittleEndian(
@@ -101,8 +105,18 @@ public record FgbDataset
             var pointer = new FgbFeaturePtr(
                 intersect.Offset,
                 checked(payloadLength + FgbFeaturePtr.LengthPrefix));
+            
+            var feature = FeatureConversions.FromByteBuffer(factory,
+                sequenceFactory,
+                new ByteBuffer(GetRawFeatureBytes(pointer)),
+                _header);
 
-            WriteFeature(output, pointer);
+            if (feature.Geometry is null || !allowedArea.Intersects(feature.Geometry))
+            {
+                 continue;  
+            }
+            
+            WriteFeature(output, pointer); 
         }
                 
         return output.ToArray();

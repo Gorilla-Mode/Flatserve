@@ -110,7 +110,7 @@ function TimingDialog({ record, origin, fallback, onClose }: {
       <tr><th scope="row">Download + decoding</th><td>{duration(record.downloadDecodeMs)}</td></tr>
       <tr><th scope="row">Browser total</th><td>{duration(record.totalMs)}</td></tr>
     </tbody></table>
-    <p id="timing-explanation">HTTP duration uses browser network timestamps for connection setup, server processing, and response download. Unavailable means no unambiguous network timing was found. Download + decoding measures remaining body download and decoding after headers arrive. Browser total measures fetch through completed decoding, including JavaScript delays. These measurements overlap and are not additive.</p>
+    <p id="timing-explanation">HTTP duration measures from sending the request until the complete response arrives, including server waiting and response download. It excludes queueing, DNS, and connection setup. Unavailable means request timestamps are missing, restricted, invalid, or ambiguous. Download + decoding measures remaining body download and decoding after headers arrive. Browser total measures fetch through completed decoding, including browser and JavaScript delays. These measurements overlap and are not additive.</p>
     <div className="dialog-actions"><button autoFocus onClick={onClose}>Close</button></div>
   </dialog>;
 }

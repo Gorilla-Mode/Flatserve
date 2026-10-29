@@ -1,9 +1,85 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { collectionUrl, decodeResponse, fetchFeatures, filterUrl, httpDuration, normalizeApiUrl } from './api';
+import { authorizedAreaUrl, collectionUrl, decodeResponse, fetchAuthorizedArea, fetchFeatures, filterUrl, httpDuration, normalizeApiUrl } from './api';
 import { WORLD } from './bounds';
 import { chunked, encoded, headerOnly } from '../tests/fixtures';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+const polygon = {
+  type: 'Feature', properties: { userId: 0 },
+  geometry: { type: 'Polygon', coordinates: [[[7, 58], [9, 58], [9, 60], [7, 58]]] },
+};
+
+describe('authorized area', () => {
+  it.each([0, 1, 2])('preserves the base path for user %s and requests GeoJSON without credentials', async (id) => {
+    const url = authorizedAreaUrl('https://example.org/proxy/v1///', id);
+    expect(url.href).toBe(`https://example.org/proxy/v1/fgb/auth-polygon/${id}`);
+    expect(authorizedAreaUrl('http://localhost:5220', id).pathname).toBe(`/fgb/auth-polygon/${id}`);
+    const fetchMock = vi.fn(async () => Response.json(polygon));
+    vi.stubGlobal('fetch', fetchMock);
+    const signal = new AbortController().signal;
+    expect(await fetchAuthorizedArea('https://example.org/proxy/v1', id, signal)).toEqual(polygon);
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(url, {
+      signal, credentials: 'omit', headers: { Accept: 'application/geo+json' },
+    });
+  });
+
+  it.each([
+    null, {}, { ...polygon, type: 'FeatureCollection' }, { ...polygon, geometry: null },
+    { ...polygon, properties: [] },
+    ...[
+      { type: 'MultiPolygon', coordinates: [polygon.geometry.coordinates] },
+      { type: 'Point', coordinates: [7, 58] },
+      { type: 'Polygon', coordinates: [] },
+      { type: 'Polygon', coordinates: null },
+      { type: 'Polygon', coordinates: [[]] },
+      { type: 'Polygon', coordinates: [[[7, 58], [9, 58], [7, 58]]] },
+      { type: 'Polygon', coordinates: [[[7, 58], [9, 58], [9, 60], [8, 58]]] },
+      { type: 'Polygon', coordinates: [[[7, 58], [9, '58'], [9, 60], [7, 58]]] },
+      { type: 'Polygon', coordinates: [[[7, 58], [9, null], [9, 60], [7, 58]]] },
+      { type: 'Polygon', coordinates: [[[7, 58], [9], [9, 60], [7, 58]]] },
+    ].map((geometry) => ({ ...polygon, geometry })),
+  ])('rejects malformed GeoJSON (%j)', async (feature) => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(feature)));
+    await expect(fetchAuthorizedArea('https://example.org', 0, new AbortController().signal))
+      .rejects.toThrow('valid Polygon and finite coordinates');
+  });
+
+  it.each([NaN, Infinity, -Infinity])('rejects non-finite coordinates (%s)', async (coordinate) => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ ...polygon,
+      geometry: { type: 'Polygon', coordinates: [[[7, 58], [9, coordinate], [9, 60], [7, 58]]] },
+    }) })));
+    await expect(fetchAuthorizedArea('https://example.org', 0, new AbortController().signal)).rejects.toThrow('finite coordinates');
+  });
+
+  it('accepts holes and finite altitude coordinates', async () => {
+    const feature = { ...polygon, properties: null, geometry: { type: 'Polygon', coordinates: [
+      [[7, 58, 0], [9, 58, 0], [9, 60, 0], [7, 58, 0]],
+      [[8, 58.5, 0], [8.5, 58.5, 0], [8.5, 59, 0], [8, 58.5, 0]],
+    ] } };
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(feature)));
+    expect(await fetchAuthorizedArea('https://example.org', 0, new AbortController().signal)).toEqual(feature);
+  });
+
+  it('reports HTTP and invalid JSON errors', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('Unavailable', { status: 503 })));
+    await expect(fetchAuthorizedArea('https://example.org', 1, new AbortController().signal)).rejects.toThrow('HTTP 503');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('invalid json')));
+    await expect(fetchAuthorizedArea('https://example.org', 1, new AbortController().signal)).rejects.toThrow('not valid JSON');
+  });
+
+  it('honors abort before fetching and after reading the body even when fetch ignores cancellation', async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async () => Response.json(polygon));
+    vi.stubGlobal('fetch', fetchMock);
+    controller.abort();
+    await expect(fetchAuthorizedArea('https://example.org', 0, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const pending = new AbortController();
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => { pending.abort(); return polygon; } })));
+    await expect(fetchAuthorizedArea('https://example.org', 0, pending.signal)).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
 
 describe('fetch options', () => {
   it.each([undefined, 'no-store'] as const)('forwards cache mode %s without changing the URL', async (cache) => {
@@ -32,7 +108,7 @@ describe('request timing', () => {
     const url = filterUrl('https://example.org/proxy', 'Sør & Øst');
     vi.spyOn(performance, 'getEntriesByName').mockImplementation(() => {
       clock += 1000; // Timing lookup must not inflate browser total.
-      return [resource(url.href, 110, 210)];
+      return [resource(url.href, 110, 210, 140)];
     }).mockReturnValueOnce([]);
     const result = fetchFeatures(url, { signal: new AbortController().signal, onTiming, onHeader,
       onBatch: () => { clock += delay; } });
@@ -46,7 +122,18 @@ describe('request timing', () => {
     clock = 245;
     body.close();
     expect(await result).toHaveLength(empty ? 0 : 3);
-    expect(onTiming).toHaveBeenCalledExactlyOnceWith({ url: url.href, httpMs: 100, downloadDecodeMs: 120 + delay, totalMs: 145 + delay });
+    expect(onTiming).toHaveBeenCalledExactlyOnceWith({ url: url.href, httpMs: 70, downloadDecodeMs: 120 + delay, totalMs: 145 + delay });
+  });
+
+  it('keeps browser total and download + decoding when request timestamps are masked', async () => {
+    let clock = 100;
+    vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    const url = filterUrl('https://example.org', 'Oslo');
+    vi.spyOn(performance, 'getEntriesByName').mockReturnValue([resource(url.href, 110, 210, 0)]).mockReturnValueOnce([]);
+    vi.stubGlobal('fetch', vi.fn(async () => { clock = 125; return chunked(encoded()); }));
+    const onTiming = vi.fn();
+    await fetchFeatures(url, { signal: new AbortController().signal, onTiming, onBatch: () => { clock = 245; } });
+    expect(onTiming).toHaveBeenCalledExactlyOnceWith({ url: url.href, httpMs: null, downloadDecodeMs: 120, totalMs: 145 });
   });
 
   it.each(['http', 'decode', 'network', 'abort-fetch', 'abort-body', 'already-aborted'])(
@@ -62,7 +149,7 @@ describe('request timing', () => {
       });
       vi.stubGlobal('fetch', fetchMock);
       if (failure === 'already-aborted') controller.abort();
-      await expect(fetchFeatures(collectionUrl('https://example.org', WORLD), {
+      await expect(fetchFeatures(collectionUrl('https://example.org', WORLD, 2), {
         signal: controller.signal, onTiming,
         onHeader: () => { if (failure === 'abort-body') controller.abort(); },
       })).rejects.toThrow();
@@ -73,10 +160,14 @@ describe('request timing', () => {
 });
 
 describe('API URLs', () => {
+  it.each([0, 1, 2])('includes demo user %s in collection requests only', (userId) => {
+    expect(collectionUrl('https://example.org', WORLD, userId).searchParams.get('userId')).toBe(String(userId));
+    expect([...filterUrl('https://example.org', 'Oslo').searchParams.keys()]).toEqual(['attribute', 'value']);
+  });
   it('accepts absolute HTTP(S) and preserves a base path', () => {
     expect(normalizeApiUrl(' http://localhost:5220 ')).toBe('http://localhost:5220/');
     expect(normalizeApiUrl('https://example.org/proxy/v1///')).toBe('https://example.org/proxy/v1/');
-    const url = collectionUrl('https://example.org/proxy/v1', WORLD);
+    const url = collectionUrl('https://example.org/proxy/v1', WORLD, 2);
     expect(url.pathname).toBe('/proxy/v1/fgb/collection');
     expect(url.searchParams.get('minX')).toBe('-180');
     const filtered = filterUrl('https://example.org/proxy', 'A & B / Sør + Øst');
@@ -148,16 +239,23 @@ describe('progressive FlatGeobuf decoding', () => {
   });
 });
 
-function resource(name: string, startTime: number, responseEnd: number, initiatorType = 'fetch'): PerformanceResourceTiming {
+function resource(name: string, startTime: number, responseEnd: number, requestStart = startTime, initiatorType = 'fetch'): PerformanceResourceTiming {
   return { name, entryType: 'resource', startTime, responseEnd, initiatorType,
-    requestStart: 0, responseStart: 0, connectStart: 0, domainLookupStart: 0,
+    requestStart, responseStart: 0, connectStart: 0, domainLookupStart: 0,
   } as PerformanceResourceTiming;
 }
 
 describe('HTTP Resource Timing attribution', () => {
   const url = 'https://cross-origin.example/fgb/filter?value=A';
-  it('uses start and end even when cross-origin detailed fields are restricted', () => {
-    expect(httpDuration([resource(url, 110, 210)], url, 100, 245)).toBe(100);
+  it.each([110, 140, 200])('measures the HTTP exchange from requestStart %s, excluding earlier browser delays', (requestStart) => {
+    expect(httpDuration([resource(url, 110, 210, requestStart)], url, 100, 245)).toBe(210 - requestStart);
+  });
+  it('returns unavailable when requestStart is missing', () => {
+    const { requestStart: _requestStart, ...entry } = resource(url, 110, 210);
+    expect(httpDuration([entry as PerformanceEntry], url, 100, 245)).toBeNull();
+  });
+  it.each([0, -1, NaN, Infinity, -Infinity, 109, 210, 211])('returns unavailable for a masked or invalid requestStart (%s)', (requestStart) => {
+    expect(httpDuration([resource(url, 110, 210, requestStart)], url, 100, 245)).toBeNull();
   });
   it('excludes entries already present even when timestamps have been rounded', () => {
     const old = resource(url, 100, 120);
@@ -166,7 +264,7 @@ describe('HTTP Resource Timing attribution', () => {
   });
   it('excludes earlier entries for repeated URLs and other URLs or initiators', () => {
     expect(httpDuration([resource(url, 10, 90), resource(url, 110, 210),
-      resource(url + 'B', 120, 220), resource(url, 120, 220, 'xmlhttprequest')], url, 100, 245)).toBe(100);
+      resource(url + 'B', 120, 220), resource(url, 120, 220, 120, 'xmlhttprequest')], url, 100, 245)).toBe(100);
   });
   it.each([[], [resource(url, 10, 90)], [resource(url, 110, 210), resource(url, 120, 220)],
     [resource(url, 110, 0)], [resource(url, 110, 110)], [resource(url, 110, 109)],
