@@ -58,4 +58,17 @@ public class FlatGeobufController(FgbDataset fgbDataset) : ControllerBase
     {
         return File(fgbDataset.FilterTextAttribute(attribute, value), "application/vnd.fgb");
     }
+    
+    [HttpGet]
+    [Route("auth-polygon/{userId:int}")]
+    public IActionResult GetAuthPolygon(
+        [FromRoute, BindRequired] int userId)
+    {
+        if (!UserCollection.Users.TryGetValue(userId, out var user))
+        {
+            return BadRequest($"User with ID {userId} not found.");
+        }
+
+        return Content(user.AuthPolygonGeoJson(), "application/geo+json");
+    }
 }

@@ -27,3 +27,7 @@ Accept: application/vnd.fgb
 ### Filter by Brannvesen kristiansand
 GET {{Flatserve_HostAddress}}/fgb/filter?value=Kristiansandsregionen%20BR&attribute=brannvesen
 Accept: application/vnd.fgb
+
+### Auth Polygon
+GET {{Flatserve_HostAddress}}/fgb/auth-polygon/2
+Accept: text/json
