@@ -75,6 +75,13 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
+// Match the public CORS policy so cross-origin clients can measure the HTTP exchange.
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["Timing-Allow-Origin"] = "*";
+    await next(context);
+});
+
 app.UseCors();
 
 app.UseHttpsRedirection();
