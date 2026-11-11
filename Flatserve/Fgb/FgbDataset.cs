@@ -5,7 +5,6 @@ using FlatGeobuf.NTS;
 using Flatserve.Index;
 using Google.FlatBuffers;
 using NetTopologySuite.Geometries;
-using Geometry = NetTopologySuite.Geometries.Geometry;
 
 namespace Flatserve.Fgb;
 
@@ -20,7 +19,7 @@ public record FgbDataset
     private byte[] _exportHeader = [];
    
 
-    public FgbDataset(string filePath)
+    public FgbDataset(string filePath, IEnumerable<string>? textIndexes = null)
     {
         var raw = File.ReadAllBytes(filePath);
 
@@ -48,7 +47,12 @@ public record FgbDataset
         using var featureStream = new MemoryStream(_data, false);
         using var featureReader = new BinaryReader(featureStream);
         FeaturePtrs = GetFeaturePtrs(featureStream, featureReader);
-        BuildTextIndex("brannvesen"); //TODO: make dynamic based on user input or configuration
+        
+        foreach (var attribute in (textIndexes ?? ["brannvesen"]).Distinct(StringComparer.Ordinal))
+        {
+            if (_header.Columns?.Any(column => column.Name == attribute && column.Type == ColumnType.String) == true)
+                BuildTextIndex(attribute);
+        }
     }
 
     private void CreateExportHeader(Header originalHeader)
