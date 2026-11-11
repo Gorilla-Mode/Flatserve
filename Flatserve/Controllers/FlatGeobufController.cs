@@ -8,13 +8,35 @@ namespace Flatserve.Controllers;
 
 [ApiController]
 [Route("fgb")]
-public class FlatGeobufController(FgbDatasetRegistry registry) : ControllerBase
+public class FlatGeobufController(
+    FgbDatasetRegistry registry,
+    IConfiguration configuration,
+    IWebHostEnvironment environment
+    ) : ControllerBase
 {
     [HttpGet("indexes")]
     public IActionResult Indexes() => Ok(new
     {
         layers = registry.Datasets.Select(layer => new { id = layer.Key, indexes = layer.Value.TextIndexesMeta })
     });
+
+    [HttpGet("style")]
+    public IActionResult Style()
+    {
+        var dir = Path.GetFullPath(
+            configuration["fgb:Directory"] ?? throw new InvalidOperationException("fgb:Directory is not configured.") ,
+            environment.ContentRootPath);
+
+        var file = Directory.GetFiles(dir, "*.json");
+        
+        if (file.Length == 0)
+            return NotFound("No style file found in the FGB directory.");
+        
+        if (file.Length > 1)
+            return BadRequest("Multiple style files found in the FGB directory. Only one is allowed.");
+        
+        return PhysicalFile(file[0], "application/json");
+    }
 
     private IActionResult Export(string? layerId, Func<FgbDataset, byte[]> query)
     {
