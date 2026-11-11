@@ -1,8 +1,11 @@
-import { validateStyleMin } from '@maplibre/maplibre-gl-style-spec';
-import type { GeoJSONSource, Map, StyleSpecification } from 'maplibre-gl';
+import { convertFilter, validateStyleMin } from '@maplibre/maplibre-gl-style-spec';
+import type { VisibilitySpecification } from '@maplibre/maplibre-gl-style-spec';
+import type { FilterSpecification, GeoJSONSource, Map, StyleSpecification } from 'maplibre-gl';
 import type { Feature } from 'geojson';
-import { errorMessage, featureLayer, normalizeApiUrl } from './api';
+import { errorMessage, normalizeApiUrl } from './api';
 import { loadEmbeddedIcons } from './styleIcons';
+import { layerColor } from './dataset';
+import type { DataBatch } from './dataset';
 
 export async function fetchStylesheet(base: string, signal: AbortSignal) {
   const response = await fetch(new URL('fgb/style', normalizeApiUrl(base)), {
@@ -25,8 +28,10 @@ export type PreparedStylesheet = Awaited<ReturnType<typeof fetchStylesheet>>;
 const collection = (features: Feature[]) => ({ type: 'FeatureCollection' as const, features });
 
 /** Adapt GeoFlatpack's generated source names and embedded images to API datasets. */
-export function renderStyledLayers(map: Map, datasetIds: string[], prepared: PreparedStylesheet) {
-  const { style, icons } = prepared;
+export function renderStyledLayers(map: Map, datasetIds: string[], prepared?: PreparedStylesheet) {
+  const { style, icons } = prepared ?? { style: { sources: {}, layers: [] } as unknown as StyleSpecification,
+    icons: { images: new globalThis.Map(), errors: [] } };
+  const originals = new globalThis.Map<string, { filter?: FilterSpecification; visibility: VisibilitySpecification; expression?: ReturnType<typeof convertFilter> }>();
   const warnings = [...icons.errors];
   const sources = new globalThis.Map<string, string>();
   const layers = new globalThis.Map<string, string[]>();
@@ -53,12 +58,12 @@ export function renderStyledLayers(map: Map, datasetIds: string[], prepared: Pre
     for (const id of datasetIds) {
       const source = Object.hasOwn(style.sources, id) ? style.sources[id] : undefined;
       if (source?.type !== 'geojson' || !style.layers.some((layer) => 'source' in layer && layer.source === id)) {
-        warnings.push(`No matching stylesheet source/layers for ${id}. Using basic styling.`);
+        if (prepared) warnings.push(`No matching stylesheet source/layers for ${id}. Using basic styling.`);
         continue;
       }
       const runtimeId = `flatserve-style-source:${encodeURIComponent(id)}`;
       try {
-        map.addSource(runtimeId, { ...source, data: collection([]) });
+        map.addSource(runtimeId, { ...source, generateId: false, promoteId: undefined, data: collection([]) });
         sources.set(id, runtimeId);
         layers.set(id, []);
       } catch (error) { warnings.push(`${id}: ${errorMessage(error)} Using basic styling.`); }
@@ -82,6 +87,9 @@ export function renderStyledLayers(map: Map, datasetIds: string[], prepared: Pre
         map.addLayer(runtime, 'authorized-area-fill');
         if (!map.getLayer(id)) throw new Error(`Unable to add layer ${layer.id}.`);
         layers.get(owner)!.push(id);
+        const filter = 'filter' in layer ? layer.filter : undefined;
+        originals.set(id, { filter, expression: filter === undefined ? undefined : convertFilter(filter),
+          visibility: layer.layout?.visibility ?? 'visible' });
       } catch (error) {
         removeDataset(owner);
         warnings.push(`${owner}: ${errorMessage(error)} Using basic styling.`);
@@ -92,12 +100,59 @@ export function renderStyledLayers(map: Map, datasetIds: string[], prepared: Pre
     for (const id of images) if (map.hasImage(id)) map.removeImage(id);
     throw error;
   }
+  const styled = new Set(sources.keys());
+  // Per-dataset layers allow layout toggles; keep every fallback fill below lines and points.
+  const fallbacks = datasetIds.filter((dataset) => !sources.has(dataset));
+  for (const dataset of fallbacks) {
+    const source = `flatserve-fallback-source:${encodeURIComponent(dataset)}`;
+    map.addSource(source, { type: 'geojson', generateId: false, data: collection([]) });
+    sources.set(dataset, source);
+    layers.set(dataset, []);
+  }
+  for (const [type, geometry] of [['fill', 'Polygon'], ['line', 'LineString'], ['circle', 'Point']] as const) {
+    for (const dataset of fallbacks) {
+      const color = layerColor(dataset);
+      const paint = type === 'fill' ? { 'fill-color': color, 'fill-opacity': .18 }
+        : type === 'line' ? { 'line-color': color, 'line-width': 2 }
+        : { 'circle-color': color, 'circle-radius': 5, 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1.5 };
+      const id = `flatserve-fallback-layer:${encodeURIComponent(dataset)}:${type}`;
+      const filter: FilterSpecification = ['==', ['geometry-type'], geometry];
+      map.addLayer({ id, type, source: sources.get(dataset)!, filter, paint } as Parameters<Map['addLayer']>[0], 'authorized-area-fill');
+      layers.get(dataset)!.push(id);
+      originals.set(id, { filter, expression: convertFilter(filter), visibility: 'visible' });
+    }
+  }
+  let version = -1;
+  let previousMembership: Record<string, number[]> | null | undefined;
+  let previousHidden = new Set<string>();
+  const equalIds = (a: number[], b: number[]) => a.length === b.length && a.every((id, index) => id === b[index]);
   return {
-    styled: new Set(sources.keys()), warnings,
-    update(features: Feature[]) {
-      for (const [id, source] of sources)
-        (map.getSource(source) as GeoJSONSource).setData(collection(features.filter((feature) => featureLayer(feature) === id)));
-      (map.getSource('stations') as GeoJSONSource).setData(collection(features.filter((feature) => !sources.has(featureLayer(feature)))));
+    styled, warnings,
+    update(batch: DataBatch, membership: Record<string, number[]> | null = null, hidden = new Set<string>()) {
+      const newBatch = batch.version !== version;
+      for (const [dataset, ownedLayers] of layers) {
+        const ids = membership?.[dataset] ?? [];
+        const previousIds = previousMembership?.[dataset] ?? [];
+        const changed = previousMembership === undefined || (membership === null) !== (previousMembership === null)
+          || !equalIds(ids, previousIds);
+        for (const id of ownedLayers) {
+          const original = originals.get(id)!;
+          if (changed) {
+            const restriction: FilterSpecification = ['in', ['id'], ['literal', ids]];
+            const filter: FilterSpecification = original.expression === undefined
+              ? restriction : ['all', original.expression, restriction];
+            map.setFilter(id, membership === null ? original.filter ?? null : filter);
+          }
+          if (hidden.has(dataset) !== previousHidden.has(dataset))
+            map.setLayoutProperty(id, 'visibility', hidden.has(dataset) ? 'none' : original.visibility);
+        }
+      }
+      // Install membership before replacing geometry: no buffered features flash outside the BBox.
+      if (newBatch) for (const [dataset, source] of sources)
+        (map.getSource(source) as GeoJSONSource).setData(collection(batch.groups.get(dataset) ?? []));
+      version = batch.version;
+      previousMembership = membership;
+      previousHidden = hidden;
     },
     cleanup() {
       for (const id of [...sources.keys()]) removeDataset(id);

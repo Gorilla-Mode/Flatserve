@@ -1,14 +1,17 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Map as MapLibreMap, Marker, NavigationControl, setWorkerUrl } from 'maplibre-gl';
-import type { ExpressionSpecification, GeoJSONSource } from 'maplibre-gl';
+import type { GeoJSONSource } from 'maplibre-gl';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import type { Feature, FeatureCollection, Polygon } from 'geojson';
-import { errorMessage, featureLayer, fetchAuthorizedArea, fetchIndexes, normalizeApiUrl } from './api';
+import { errorMessage, fetchAuthorizedArea, fetchIndexes, normalizeApiUrl } from './api';
 import type { FgbLayer, TextIndex } from './api';
 import { coverageOutline, insetBounds, viewportBounds } from './bounds';
 import type { Bounds } from './bounds';
 import { DatasetSession } from './session';
+import { layerColor, prepareBatch } from './dataset';
+import { ViewportStatistics } from './viewport';
+import type { ViewState } from './viewport';
 import { timingHistory } from './timings';
 import { RequestTimings } from './RequestTimings';
 import { fetchStylesheet, renderStyledLayers } from './stylesheet';
@@ -17,15 +20,6 @@ import type { PreparedStylesheet } from './stylesheet';
 setWorkerUrl(workerUrl);
 const viewportColor = '#16a34a';
 const bufferColor = '#ef4444';
-const layerColors = ['#bb342a', '#38bdf8', '#fbbf24', '#a78bfa', '#34d399', '#fb923c'];
-function layerColor(id: string): string {
-  if (id === 'dataset') return layerColors[0];
-  let hash = 0;
-  for (const character of id) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
-  return layerColors[hash % layerColors.length];
-}
-const featureColor: ExpressionSpecification = ['coalesce', ['get', '__flatserveColor'], '#bb342a'];
-
 function bboxLabel(map: MapLibreMap, text: string, color: string, position: [number, number]): Marker {
   const element = document.createElement('div');
   element.className = 'bbox-label';
@@ -41,7 +35,9 @@ export function App() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<MapLibreMap | null>(null);
   const session = useRef<DatasetSession | null>(null);
-  const featuresRef = useRef<Feature[]>([]);
+  const statistics = useRef<ViewportStatistics | null>(null);
+  const viewRef = useRef<ViewState>({ batch: prepareBatch([], 0), counts: {}, membership: null });
+  const hiddenRef = useRef(new Set<string>());
   const styleRenderer = useRef<ReturnType<typeof renderStyledLayers> | null>(null);
   const [stylesheet, setStylesheet] = useState<{ connection: NonNullable<typeof connection>; prepared: PreparedStylesheet } | null>(null);
   const [styleStatus, setStyleStatus] = useState({ loading: false, error: null as string | null });
@@ -79,20 +75,15 @@ export function App() {
   const [coverage, setCoverage] = useState<Bounds[] | undefined>();
   const bboxActive = bboxEnabled && selection === '';
   const canShowBuffer = !!connection && mapReady && bboxActive && bufferEnabled;
-  const [features, setFeatures] = useState<Feature[]>([]);
+  const [view, setView] = useState<ViewState>(viewRef.current);
   const [layers, setLayers] = useState<FgbLayer[]>([]);
   const [hiddenLayers, setHiddenLayers] = useState<Set<string>>(new Set());
-  const visibleFeatures = features.filter((feature) => !hiddenLayers.has(featureLayer(feature)));
-  const count = visibleFeatures.length;
+  hiddenRef.current = hiddenLayers;
+  const count = Object.entries(view.counts).reduce((sum, [dataset, count]) => sum + (hiddenLayers.has(dataset) ? 0 : count), 0);
 
   useEffect(() => {
-    const rendered = visibleFeatures.map((feature) => ({ ...feature,
-      properties: { ...feature.properties, __flatserveColor: layerColor(featureLayer(feature)) },
-    }));
-    featuresRef.current = rendered;
-    if (styleRenderer.current) styleRenderer.current.update(rendered);
-    else if (mapReady) (map.current?.getSource('stations') as GeoJSONSource | undefined)?.setData(collection(rendered));
-  }, [features, hiddenLayers, mapReady]);
+    styleRenderer.current?.update(view.batch, view.membership, hiddenLayers);
+  }, [view, hiddenLayers]);
   const [status, setStatus] = useState({ loading: false, error: null as string | null });
   const [discovery, setDiscovery] = useState({ loading: false, error: null as string | null });
 
@@ -115,27 +106,6 @@ export function App() {
     instance.addControl(new NavigationControl(), 'bottom-right');
     instance.on('error', (event) => setMapError(`Basemap: ${event.error.message}`));
     instance.on('load', () => {
-      instance.addSource('stations', { type: 'geojson', data: collection(featuresRef.current) });
-      instance.addLayer({
-        id: 'dataset-polygons', type: 'fill', source: 'stations',
-        filter: ['==', ['geometry-type'], 'Polygon'],
-        paint: { 'fill-color': featureColor, 'fill-opacity': 0.18 },
-      });
-      instance.addLayer({
-        id: 'dataset-lines', type: 'line', source: 'stations',
-        filter: ['==', ['geometry-type'], 'LineString'],
-        paint: { 'line-color': featureColor, 'line-width': 2 },
-      });
-      instance.addLayer({
-        id: 'stations', type: 'circle', source: 'stations',
-        filter: ['==', ['geometry-type'], 'Point'],
-        paint: {
-          'circle-radius': 5,
-          'circle-color': featureColor,
-          'circle-stroke-color': '#ffffff',
-          'circle-stroke-width': 1.5,
-        },
-      });
       instance.addSource('authorized-area', { type: 'geojson', data: collection([]) });
       instance.addLayer({
         id: 'authorized-area-fill', type: 'fill', source: 'authorized-area',
@@ -183,13 +153,11 @@ export function App() {
     setStyleWarnings([]);
     if (!mapReady || !map.current) return;
     const instance = map.current;
-    // Restore fallback data immediately while loading or switching connections.
-    (instance.getSource('stations') as GeoJSONSource).setData(collection(featuresRef.current));
-    if (!stylesheet || stylesheet.connection !== connection || !layers.length) return;
     try {
-      const renderer = renderStyledLayers(instance, layers.map((layer) => layer.id), stylesheet.prepared);
+      const prepared = stylesheet?.connection === connection ? stylesheet.prepared : undefined;
+      const renderer = renderStyledLayers(instance, layers.map((layer) => layer.id), prepared);
       styleRenderer.current = renderer;
-      renderer.update(featuresRef.current);
+      renderer.update(viewRef.current.batch, viewRef.current.membership, hiddenRef.current);
       setStyledDatasets(renderer.styled);
       setStyleWarnings(renderer.warnings);
       return () => {
@@ -251,15 +219,19 @@ export function App() {
 
   useEffect(() => {
     if (!connection) return;
-    featuresRef.current = [];
-    setFeatures([]);
+    viewRef.current = { batch: prepareBatch([], 0), counts: {}, membership: null };
+    setView(viewRef.current);
+    const viewport = new ViewportStatistics(connection.id, (state) => {
+      viewRef.current = state;
+      setView(state);
+    });
+    statistics.current = viewport;
     setLayers([]);
     setHiddenLayers(new Set());
-    (map.current?.getSource('stations') as GeoJSONSource | undefined)?.setData(collection([]));
     let fitted = false;
     const current = new DatasetSession(connection.url, {
       onFeatures: (features) => {
-        setFeatures(features);
+        viewport.setData(features);
       },
       onStatus: setStatus,
       onDiscovery: setDiscovery,
@@ -279,6 +251,8 @@ export function App() {
     void current.discover();
     return () => {
       current.dispose();
+      viewport.dispose();
+      statistics.current = null;
       session.current = null;
     };
   }, [connection]);
@@ -302,7 +276,7 @@ export function App() {
     const updateArea = () => {
       const canvas = instance.getCanvas();
       const inset = bboxActive ? insetBounds(instance, canvas.clientWidth, canvas.clientHeight) : null;
-      (instance.getSource('query-bbox') as GeoJSONSource).setData(collection(inset ? [inset.outline] : []));
+      if (inset) (instance.getSource('query-bbox') as GeoJSONSource).setData(collection([inset.outline]));
       if (inset) {
         const corner = inset.outline.geometry.coordinates[3] as [number, number];
         label ??= bboxLabel(instance, 'Viewport bbox', viewportColor, corner);
@@ -313,18 +287,23 @@ export function App() {
         bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth(),
       );
     };
+    if (!bboxActive) (instance.getSource('query-bbox') as GeoJSONSource).setData(collection([]));
+    const bounds = updateArea();
+    statistics.current?.setView(bounds, bboxActive, !!selection, true);
     // Apply all query settings atomically and invalidate incompatible coverage/work.
-    void current.setTextFilter(selection ? { attribute: selectedAttribute, value: selectedValue! } : null, updateArea(), bufferEnabled);
-    const update = () => {
+    void current.setTextFilter(selection ? { attribute: selectedAttribute, value: selectedValue! } : null, bounds, bufferEnabled);
+    const update = (final = false) => {
       frame = undefined;
-      void current.setBounds(updateArea());
+      const bounds = updateArea();
+      statistics.current?.setView(bounds, bboxActive, !!selection, final);
+      void current.setBounds(bounds);
     };
     const schedule = () => {
-      if (frame === undefined) frame = requestAnimationFrame(update);
+      if (frame === undefined) frame = requestAnimationFrame(() => update());
     };
     const finish = () => {
       if (frame !== undefined) cancelAnimationFrame(frame);
-      update();
+      update(true);
     };
     instance.on('move', schedule);
     instance.on('moveend', finish);
@@ -419,7 +398,7 @@ export function App() {
                 {styledDatasets.has(layer.id) ? <small>Styled</small>
                   : <span className="layer-swatch" style={{ backgroundColor: layerColor(layer.id) }} />}
                 <span className="layer-name">{layer.id}</span>
-                <small>{features.filter((feature) => featureLayer(feature) === layer.id).length.toLocaleString()}</small>
+                <small>{(view.counts[layer.id] ?? 0).toLocaleString()}</small>
               </label>
             </li>)}
           </ul>

@@ -114,3 +114,24 @@ test('keeps dataset polygons red and draws blue authorized geometry above them',
   await expect(page.getByRole('alert')).toHaveCount(0);
   await page.screenshot({ path: 'test-results/geometries-and-authorization.png' });
 });
+
+test('hides nonintersecting buffered features in BBox mode and restores them when BBox ends', async ({ page }) => {
+  const requests: URL[] = [];
+  page.on('request', (request) => {
+    if (request.url().includes('/fgb/collection?')) requests.push(new URL(request.url()));
+  });
+  await expect.poll(async () => (await samples(page, [[8, 60], [14, 60]], [255, 255, 255], 7)).every((count) => count > 2)).toBe(true);
+  const bbox = page.getByRole('button', { name: 'BBox', exact: true });
+  await bbox.click();
+  await expect.poll(() => requests.length).toBeGreaterThan(0);
+  await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
+  await expect.poll(async () => await samples(page, [[8, 60], [14, 60]], [255, 255, 255], 7)).toEqual([0, 0]);
+  // Replacing a buffered batch must keep membership applied to its new runtime IDs.
+  await page.getByRole('button', { name: 'Buffer', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
+  expect(await samples(page, [[8, 60], [14, 60]], [255, 255, 255], 7)).toEqual([0, 0]);
+  await bbox.click();
+  await expect(page.getByRole('status')).toHaveText('7 features in view');
+  await expect.poll(async () => (await samples(page, [[8, 60], [14, 60]], [255, 255, 255], 7)).every((count) => count > 2)).toBe(true);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});

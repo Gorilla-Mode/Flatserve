@@ -51,8 +51,8 @@ it('discovers all layer metadata and fits their combined extent, preserving laye
   session.dispose();
 });
 
-describe('geometry-aware session publishing', () => {
-  it('reuses buffered geometries and counts original multipart and collection features once', async () => {
+describe('buffered dataset publishing', () => {
+  it('publishes complete buffered batches and never republishes geometry during covered movement', async () => {
     const features: Feature[] = [
       station('point', 1),
       { type: 'Feature', properties: {}, geometry: { type: 'MultiPoint', coordinates: [[1, 55], [20, 55]] } },
@@ -70,14 +70,14 @@ describe('geometry-aware session publishing', () => {
     const read = vi.fn().mockResolvedValue([...features, ...invisible]);
     const session = norwaySession('https://example.org', observer, read);
     await session.setBounds(area());
-    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual(features);
+    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([...features, ...invisible]);
     await session.setBounds(area(2, 12));
     expect(read).toHaveBeenCalledTimes(1);
-    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual(features.slice(2));
-    expect(observer.onFeatures.mock.lastCall?.[0].at(-1)).toBe(features.at(-1));
+    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([...features, ...invisible]);
+    expect(observer.onFeatures).toHaveBeenCalledTimes(1);
     await session.setBounds(area());
     expect(read).toHaveBeenCalledTimes(1);
-    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual(features);
+    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([...features, ...invisible]);
     await session.setFilter('all');
     expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([...features, ...invisible]);
     await session.setBounds(area(50, 60));
@@ -236,7 +236,7 @@ describe('coverage notifications', () => {
 });
 
 describe('buffered live updates', () => {
-  it('requests exact bounds with Buffer off and reuses containing coverage with live filtering', async () => {
+  it('requests exact bounds with Buffer off and reuses containing coverage without republishing geometry', async () => {
     const observer = observers();
     const read = vi.fn().mockResolvedValue([station('inside', 8), station('edge', 10)]);
     const session = norwaySession('https://example.org', observer, read);
@@ -246,7 +246,7 @@ describe('buffered live updates', () => {
     });
     await session.setBounds(area(7, 9));
     expect(read).toHaveBeenCalledTimes(1);
-    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('inside', 8)]);
+    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('inside', 8), station('edge', 10)]);
     await session.setBounds(area(7, 11));
     expect(read).toHaveBeenCalledTimes(2);
     expect(read.mock.lastCall?.[0].searchParams.get('maxX')).toBe('11');
@@ -310,29 +310,32 @@ describe('buffered live updates', () => {
     expect(observer.onStatus.mock.lastCall?.[0]).toEqual({ loading: false, error: null });
   });
 
-  it('requests a buffer, filters locally during movement, and publishes only changed subsets', async () => {
+  it('publishes each completed batch once and does no feature serialization during movement', async () => {
     const observer = observers();
     const read = vi.fn().mockResolvedValue([station('inside', 8), station('buffer', 12), station('outside', 20)]);
     const session = norwaySession('https://example.org', observer, read);
     await session.setBounds(area());
+    const stringify = vi.spyOn(JSON, 'stringify');
     expect(Object.fromEntries(read.mock.calls[0][0].searchParams)).toEqual({
       userId: '2', minX: '-2.5', minY: '47.5', maxX: '12.5', maxY: '62.5',
     });
-    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('inside', 8)]);
+    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('inside', 8), station('buffer', 12), station('outside', 20)]);
     await session.setBounds(area(1, 11));
     expect(observer.onFeatures).toHaveBeenCalledTimes(1);
     await session.setBounds(area(2.5, 12.5));
-    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('inside', 8), station('buffer', 12)]);
+    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('inside', 8), station('buffer', 12), station('outside', 20)]);
     await session.setBounds(area(2.5, 12.5));
-    expect(observer.onFeatures).toHaveBeenCalledTimes(2);
+    expect(observer.onFeatures).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledTimes(1);
+    expect(stringify).not.toHaveBeenCalled();
+    stringify.mockRestore();
     await session.setBounds(area(3, 13));
     expect(read).toHaveBeenCalledTimes(2);
-    // Even a new response with identical content should not update the map source.
+    // A completed request is a new data version, without comparing full feature content.
     expect(observer.onFeatures).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps one logical request, catches up to the latest bounds, and filters completion against them', async () => {
+  it('keeps one logical request, catches up to the latest bounds, and publishes complete batches for worker processing', async () => {
     const observer = observers();
     const { read, calls } = pendingReader();
     const session = norwaySession('https://example.org', observer, read);
@@ -346,13 +349,13 @@ describe('buffered live updates', () => {
     calls[0].resolve([station('old', 8)]);
     await vi.waitFor(() => expect(calls).toHaveLength(2));
     expect(calls[1].url.searchParams.get('minX')).toBe('17.5');
-    expect(observer.onFeatures).not.toHaveBeenCalled();
+    expect(observer.onFeatures).toHaveBeenCalledExactlyOnceWith([station('old', 8)]);
     // A newer camera position inside the pending buffer needs no third request.
     session.setBounds(area(22, 32));
     calls[1].resolve([station('hidden', 21), station('visible', 28)]);
     await Promise.all([first, moving]);
     expect(calls).toHaveLength(2);
-    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('visible', 28)]);
+    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('hidden', 21), station('visible', 28)]);
     expect(observer.onStatus.mock.lastCall?.[0]).toEqual({ loading: false, error: null });
   });
 
@@ -449,7 +452,7 @@ describe('buffered live updates', () => {
     await session.setBounds(area());
     await session.setFilter('', area(4, 6));
     expect(read).toHaveBeenCalledTimes(2);
-    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([]);
+    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('Oslo', 8)]);
     await session.setFilter('Oslo');
     await session.setBounds(area(7, 9));
     expect(read).toHaveBeenCalledTimes(3);
@@ -588,7 +591,7 @@ describe('user selection', () => {
 });
 
 describe('connection sessions', () => {
-  it.each(['Oslo', 'empty'])('fetches repeated %s filters and refreshes without republishing identical results', async (selection) => {
+  it.each(['Oslo', 'empty'])('fetches repeated %s filters and refreshes as new batches without comparing feature content', async (selection) => {
     const observer = observers();
     const { read, calls } = pendingReader();
     const session = norwaySession('https://example.org', observer, read);
@@ -607,8 +610,7 @@ describe('connection sessions', () => {
       expect(observer.onFeatures).not.toHaveBeenCalled();
       calls[index].resolve(structuredClone(features));
       await request;
-      if (index === 1) expect(observer.onFeatures).toHaveBeenCalledExactlyOnceWith(features);
-      else expect(observer.onFeatures).not.toHaveBeenCalled();
+      expect(observer.onFeatures).toHaveBeenCalledExactlyOnceWith(features);
       expect(observer.onStatus.mock.lastCall?.[0]).toEqual({ loading: false, error: null });
     }
   });

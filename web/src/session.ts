@@ -3,7 +3,6 @@ import { collectionUrl, errorMessage, fetchFeatures, filterUrl } from './api';
 import type { FgbLayer, HeaderMeta, RequestTiming } from './api';
 import { containsBounds, expandBounds, WORLD } from './bounds';
 import type { Bounds } from './bounds';
-import { geometryIntersectsBounds } from './geometry';
 
 interface Observer {
   onFeatures: (features: Feature[]) => void;
@@ -36,9 +35,9 @@ export class DatasetSession {
   private bounds: Bounds[] = [];
   private coverage?: Bounds[];
   private features: Feature[] = [];
-  private displayed = '[]';
   private failedTarget?: string;
   private pending?: Promise<void>;
+  private status?: { loading: boolean; error: string | null };
 
   constructor(
     private readonly base: string,
@@ -80,7 +79,6 @@ export class DatasetSession {
   setBounds(bounds: Bounds[]): Promise<void> {
     this.bounds = bounds;
     if (this.disposed || this.selection !== null) return Promise.resolve();
-    this.publish();
     return this.schedule();
   }
 
@@ -100,8 +98,10 @@ export class DatasetSession {
   setUser(userId: number | null): Promise<void> {
     if (this.disposed || this.userId === userId) return Promise.resolve();
     this.userId = userId;
-    this.features = [];
-    this.publish();
+    if (this.features.length) {
+      this.features = [];
+      this.observer.onFeatures([]);
+    }
     return this.refresh();
   }
 
@@ -118,32 +118,27 @@ export class DatasetSession {
     this.observer.onCoverage?.(undefined);
     this.failedTarget = undefined;
     if (this.disposed) return Promise.resolve();
-    if (this.selection === null) this.publish();
     return this.schedule();
   }
 
-  /** Publish only a changed visible subset; movement never changes filter matches. */
-  private publish(): void {
-    const visible = this.selection !== null ? this.features : this.features.filter((feature) =>
-      geometryIntersectsBounds(feature.geometry, this.bounds));
-    const signature = JSON.stringify(visible);
-    if (signature === this.displayed) return;
-    this.displayed = signature;
-    this.observer.onFeatures(visible);
+  private notifyStatus(status: { loading: boolean; error: string | null }): void {
+    if (this.status?.loading === status.loading && this.status.error === status.error) return;
+    this.status = status;
+    this.observer.onStatus(status);
   }
 
   private schedule(): Promise<void> {
     if (this.disposed) return Promise.resolve();
     const userId = this.userId;
     if (userId === null) {
-      this.observer.onStatus({ loading: false, error: null });
+      this.notifyStatus({ loading: false, error: null });
       return Promise.resolve();
     }
     // Movement only updates the desired bounds while one logical request is active.
     if (this.viewRequest) return this.pending!;
     const selection = this.selection;
     if (selection === null && this.coverage && containsBounds(this.coverage, this.bounds)) {
-      this.observer.onStatus({ loading: false, error: null });
+      this.notifyStatus({ loading: false, error: null });
       return Promise.resolve();
     }
     const requestBounds = this.bufferEnabled ? expandBounds(this.bounds) : this.bounds;
@@ -161,7 +156,7 @@ export class DatasetSession {
   private async load(urls: URL[], requestBounds: Bounds[], target: string, selection: string | null,
     generation: number, request: AbortController): Promise<void> {
     const current = () => !this.disposed && generation === this.generation && !request.signal.aborted;
-    this.observer.onStatus({ loading: true, error: null });
+    this.notifyStatus({ loading: true, error: null });
     const features: Feature[] = [];
     try {
       for (const url of urls) {
@@ -179,12 +174,12 @@ export class DatasetSession {
       }
       this.features = features;
       this.failedTarget = undefined;
-      this.publish();
-      this.observer.onStatus({ loading: false, error: null });
+      this.observer.onFeatures(features);
+      this.notifyStatus({ loading: false, error: null });
     } catch (error) {
       if (!current()) return;
       this.failedTarget = target;
-      this.observer.onStatus({ loading: false, error: errorMessage(error) });
+      this.notifyStatus({ loading: false, error: errorMessage(error) });
     }
     if (current()) {
       this.viewRequest = undefined;

@@ -61,7 +61,7 @@ test('Show buffer draws fetched coverage, stays fixed during reuse and pending w
   page.on('request', (request) => {
     if (request.url().includes('/fgb/collection?')) requests.push(new URL(request.url()));
   });
-  page.on('requestfailed', (request) => { if (request.url().includes('/fgb/')) failed.push(request.url()); });
+  page.on('requestfailed', (request) => { if (request.url().includes('/fgb/collection?')) failed.push(request.url()); });
   await page.goto('./');
   const show = page.getByRole('button', { name: 'Show buffer', exact: true });
   await expect(show).toBeDisabled();
