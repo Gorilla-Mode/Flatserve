@@ -11,6 +11,8 @@ import type { Bounds } from './bounds';
 import { DatasetSession } from './session';
 import { timingHistory } from './timings';
 import { RequestTimings } from './RequestTimings';
+import { fetchStylesheet, renderStyledLayers } from './stylesheet';
+import type { PreparedStylesheet } from './stylesheet';
 
 setWorkerUrl(workerUrl);
 const viewportColor = '#16a34a';
@@ -40,6 +42,12 @@ export function App() {
   const map = useRef<MapLibreMap | null>(null);
   const session = useRef<DatasetSession | null>(null);
   const featuresRef = useRef<Feature[]>([]);
+  const styleRenderer = useRef<ReturnType<typeof renderStyledLayers> | null>(null);
+  const [stylesheet, setStylesheet] = useState<{ connection: NonNullable<typeof connection>; prepared: PreparedStylesheet } | null>(null);
+  const [styleStatus, setStyleStatus] = useState({ loading: false, error: null as string | null });
+  const [styleRetry, retryStyle] = useReducer((attempt: number) => attempt + 1, 0);
+  const [styledDatasets, setStyledDatasets] = useState<Set<string>>(new Set());
+  const [styleWarnings, setStyleWarnings] = useState<string[]>([]);
   const [mapReady, setMapReady] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const [connection, setConnection] = useState<{ url: string; id: number } | null>(null);
@@ -82,7 +90,8 @@ export function App() {
       properties: { ...feature.properties, __flatserveColor: layerColor(featureLayer(feature)) },
     }));
     featuresRef.current = rendered;
-    if (mapReady) (map.current?.getSource('stations') as GeoJSONSource | undefined)?.setData(collection(rendered));
+    if (styleRenderer.current) styleRenderer.current.update(rendered);
+    else if (mapReady) (map.current?.getSource('stations') as GeoJSONSource | undefined)?.setData(collection(rendered));
   }, [features, hiddenLayers, mapReady]);
   const [status, setStatus] = useState({ loading: false, error: null as string | null });
   const [discovery, setDiscovery] = useState({ loading: false, error: null as string | null });
@@ -153,6 +162,44 @@ export function App() {
       map.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    setStylesheet(null);
+    setStyleStatus({ loading: !!connection, error: null });
+    if (!connection) return;
+    const controller = new AbortController();
+    void fetchStylesheet(connection.url, controller.signal).then((prepared) => {
+      if (controller.signal.aborted) return;
+      setStylesheet({ connection, prepared });
+      setStyleStatus({ loading: false, error: null });
+    }).catch((error: unknown) => {
+      if (!controller.signal.aborted) setStyleStatus({ loading: false, error: errorMessage(error) });
+    });
+    return () => { controller.abort(); };
+  }, [connection, styleRetry]);
+
+  useEffect(() => {
+    setStyledDatasets(new Set());
+    setStyleWarnings([]);
+    if (!mapReady || !map.current) return;
+    const instance = map.current;
+    // Restore fallback data immediately while loading or switching connections.
+    (instance.getSource('stations') as GeoJSONSource).setData(collection(featuresRef.current));
+    if (!stylesheet || stylesheet.connection !== connection || !layers.length) return;
+    try {
+      const renderer = renderStyledLayers(instance, layers.map((layer) => layer.id), stylesheet.prepared);
+      styleRenderer.current = renderer;
+      renderer.update(featuresRef.current);
+      setStyledDatasets(renderer.styled);
+      setStyleWarnings(renderer.warnings);
+      return () => {
+        styleRenderer.current = null;
+        if (map.current === instance) renderer.cleanup();
+      };
+    } catch (error) {
+      setStyleWarnings([errorMessage(error)]);
+    }
+  }, [mapReady, connection, stylesheet, layers]);
 
   useEffect(() => {
     if (authorizedAreaCache.current?.connection !== connection || authorizedAreaCache.current?.userId !== selectedUser) {
@@ -352,6 +399,13 @@ export function App() {
         <section className="sidebar-section" aria-labelledby="layers-heading">
           <h2 id="layers-heading">Layers</h2>
           {!layers.length && <small>{discovery.loading ? 'Loading layers…' : 'No layers loaded.'}</small>}
+          {styleStatus.loading && <small>Loading stylesheet…</small>}
+          {styleStatus.error && <div className="error" role="note">{styleStatus.error} Using basic styling.
+            <button onClick={retryStyle}>Retry stylesheet</button>
+          </div>}
+          {styleWarnings.length > 0 && <div className="error" role="note">{styleWarnings.join(' ')}
+            <button onClick={retryStyle}>Retry stylesheet</button>
+          </div>}
           <ul className="layer-list">
             {layers.map((layer) => <li key={layer.id}>
               <label>
@@ -362,7 +416,8 @@ export function App() {
                     return next;
                   });
                 }} />
-                <span className="layer-swatch" style={{ backgroundColor: layerColor(layer.id) }} />
+                {styledDatasets.has(layer.id) ? <small>Styled</small>
+                  : <span className="layer-swatch" style={{ backgroundColor: layerColor(layer.id) }} />}
                 <span className="layer-name">{layer.id}</span>
                 <small>{features.filter((feature) => featureLayer(feature) === layer.id).length.toLocaleString()}</small>
               </label>

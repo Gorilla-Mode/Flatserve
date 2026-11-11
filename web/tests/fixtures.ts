@@ -6,7 +6,7 @@ export const station = (name: string, x = 8): Feature<Point> => ({
   properties: { brannvesen: name },
 });
 
-export function encoded(features = [station('Oslo'), station('Kristiansand – Sør'), station('Oslo', 10)]): Uint8Array {
+export function encoded(features: Feature[] = [station('Oslo'), station('Kristiansand – Sør'), station('Oslo', 10)]): Uint8Array {
   return serialize({ type: 'FeatureCollection', features }, 4326);
 }
 

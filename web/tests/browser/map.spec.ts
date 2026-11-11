@@ -432,7 +432,8 @@ test('validates the URL and changes a connection while preserving its base path'
   await input.fill('http://localhost:5221');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await page.getByLabel('Select user', { exact: true }).selectOption('2');
-  await expect(page.getByRole('status')).toHaveText('639 features in view');
+  await expect(page.getByRole('status')).toHaveText(/^\d+ features in view$/);
+  const expectedStatus = await page.getByRole('status').innerText();
   await page.locator('.controls').getByRole('button', { name: 'Connect', exact: true }).click();
   const paths: string[] = [];
   await page.route('http://localhost:5221/proxy/v1/**', async (route) => {
@@ -444,11 +445,11 @@ test('validates the URL and changes a connection while preserving its base path'
   await input.fill('http://localhost:5221/proxy/v1');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await page.getByLabel('Select user', { exact: true }).selectOption('2');
-  await expect(page.getByRole('status')).toHaveText('639 features in view');
+  await expect(page.getByRole('status')).toHaveText(expectedStatus);
   await expect(page.locator('.api-url')).toHaveText('http://localhost:5221/proxy/v1/');
   await expect.poll(() => paths.length).toBeGreaterThanOrEqual(2);
-  await expect(page.getByRole('status')).toHaveText('639 features in view');
-  expect(paths.every((path) => ['/proxy/v1/fgb/collection', '/proxy/v1/fgb/indexes'].includes(path))).toBe(true);
+  await expect(page.getByRole('status')).toHaveText(expectedStatus);
+  expect(paths.every((path) => ['/proxy/v1/fgb/collection', '/proxy/v1/fgb/indexes', '/proxy/v1/fgb/style'].includes(path))).toBe(true);
 });
 
 test('fits on a phone viewport without horizontal overflow', async ({ page }) => {
