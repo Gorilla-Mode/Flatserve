@@ -19,7 +19,7 @@ public record FgbDataset
     private byte[] _exportHeader = [];
     public IReadOnlyList<TextIndexMetadata> TextIndexes => _textIndexes
         .OrderBy(index => index.Key, StringComparer.Ordinal)
-        .Select(index => new TextIndexMetadata(index.Key, index.Value.Values.Order(StringComparer.Ordinal).ToArray()))
+        .Select(index => new TextIndexMetadata(index.Key, HashIndex.Values.Order(StringComparer.Ordinal).ToArray()))
         .ToArray();
    
 
