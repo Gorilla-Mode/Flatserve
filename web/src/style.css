@@ -117,3 +117,10 @@ dialog .error { margin: 8px 0; }
 }
 
 .bbox-label { font-size: 12px; line-height: 1.4; font-weight: 600; white-space: nowrap; pointer-events: none; text-shadow: 0 1px 2px #000, 0 0 3px #000; }
+
+.layer-list { list-style: none; padding: 0; margin: 0; }
+.layer-list label { display: flex; align-items: center; gap: 8px; cursor: pointer; padding-block: 4px; }
+.layer-list input { min-height: 24px; width: 18px; flex-shrink: 0; accent-color: var(--green); }
+.layer-swatch { width: 10px; height: 10px; flex-shrink: 0; }
+.layer-name { overflow-wrap: anywhere; flex: 1; min-width: 0; }
+.layer-list small { color: var(--secondary); }

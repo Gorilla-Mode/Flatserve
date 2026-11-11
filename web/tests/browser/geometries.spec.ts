@@ -69,6 +69,7 @@ test.beforeEach(async ({ page }) => {
   await page.route(`${api}/fgb/filter?**`, (route) => route.fulfill({
     contentType: 'application/octet-stream', body: response,
   }));
+  await page.route(`${api}/fgb/indexes`, (route) => route.fulfill({ json: { layers: [{ id: 'fixture', indexes: [{ attribute: 'brannvesen', values: ['Geometry fixture'] }] }] } }));
   await page.goto('./');
   await page.getByLabel('API URL', { exact: true }).fill(api);
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Feature } from 'geojson';
-import type { DecodeOptions, RequestTiming } from './api';
+import type { DecodeOptions, HeaderMeta, RequestTiming } from './api';
 import { DatasetSession, distinctBrannvesen } from './session';
 import { expandBounds, viewportBounds, WORLD } from './bounds';
 import { station } from '../tests/fixtures';
@@ -22,6 +22,34 @@ function norwaySession(...args: ConstructorParameters<typeof DatasetSession>) {
 }
 
 const area = (west = 0, east = 10) => viewportBounds(west, 50, east, 60);
+
+it('discovers all layer metadata and fits their combined extent, preserving layer IDs in view data', async () => {
+  const observer = { ...observers(), onLayers: vi.fn() };
+  const headers = [
+    { envelope: new Float64Array([4, 50, 8, 60]) },
+    { envelope: new Float64Array([7, 52, 12, 65]) },
+  ] as HeaderMeta[];
+  const features = [
+    { ...station('First', 8), fgbLayerId: 'first' },
+    { ...station('Second', 8), fgbLayerId: 'second' },
+  ];
+  const read = vi.fn(async (_url: URL, options: DecodeOptions) => {
+    headers.forEach((header, index) => {
+      options.onHeader?.(header);
+      options.onLayer?.({ id: index === 0 ? 'first' : 'second', header });
+    });
+    return features;
+  });
+  const session = new DatasetSession('https://example.org', observer, read);
+  await session.discover();
+  expect(observer.onLayers.mock.lastCall?.[0].map((layer: { id: string }) => layer.id)).toEqual(['first', 'second']);
+  expect(observer.onHeader).toHaveBeenCalledOnce();
+  expect(Array.from(observer.onHeader.mock.lastCall![0].envelope)).toEqual([4, 50, 12, 65]);
+  await session.setBounds(area());
+  await session.setUser(2);
+  expect(observer.onFeatures.mock.lastCall?.[0]).toEqual(features);
+  session.dispose();
+});
 
 describe('geometry-aware session publishing', () => {
   it('reuses buffered geometries and counts original multipart and collection features once', async () => {

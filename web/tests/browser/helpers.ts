@@ -31,7 +31,7 @@ export async function expectSidebarLayout(page: Page) {
   expect(map.height).toBe(viewport.height);
   await expect.poll(async () => (await page.locator('.maplibregl-canvas').boundingBox())!.width).toBe(map.width);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await expect(controls.getByRole('heading', { level: 2 })).toHaveText(['Options', 'Status', 'Filter']);
+  await expect(controls.getByRole('heading', { level: 2 })).toHaveText(['Options', 'Layers', 'Status', 'Filter']);
   const buffer = (await controls.getByRole('button', { name: 'Buffer', exact: true }).boundingBox())!;
   const show = (await controls.getByRole('button', { name: 'Show buffer', exact: true }).boundingBox())!;
   expect(show.x).toBeGreaterThan(buffer.x);

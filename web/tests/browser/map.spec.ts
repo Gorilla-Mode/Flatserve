@@ -272,11 +272,11 @@ test('toggles filtering, updates active selections immediately, restores spatial
   const requests: string[] = [];
   page.on('request', (request) => { if (request.url().includes('/fgb/')) requests.push(request.url()); });
   await page.goto('./');
-  const select = page.getByLabel('Brannvesen', { exact: true });
+  const select = page.locator('#filter-value');
   const filter = page.getByRole('button', { name: 'Filter', exact: true });
   await expect(select).toBeDisabled();
   await expect(select).toHaveValue('');
-  await expect(select.locator('option:checked')).toHaveText('Select brannvesen');
+  await expect(select.locator('option:checked')).toHaveText('Select value');
   await expect(select.locator('option:checked')).toBeDisabled();
   await expect(select.locator('option', { hasText: 'All brannvesen' })).toHaveCount(0);
   await expect(filter).toBeDisabled();
@@ -448,7 +448,7 @@ test('validates the URL and changes a connection while preserving its base path'
   await expect(page.locator('.api-url')).toHaveText('http://localhost:5221/proxy/v1/');
   await expect.poll(() => paths.length).toBeGreaterThanOrEqual(2);
   await expect(page.getByRole('status')).toHaveText('639 features in view');
-  expect(paths.every((path) => path === '/proxy/v1/fgb/collection')).toBe(true);
+  expect(paths.every((path) => ['/proxy/v1/fgb/collection', '/proxy/v1/fgb/indexes'].includes(path))).toBe(true);
 });
 
 test('fits on a phone viewport without horizontal overflow', async ({ page }) => {

@@ -89,7 +89,7 @@ describe('fetch options', () => {
     const url = filterUrl('https://example.org', 'Oslo');
     await fetchFeatures(url, { signal, cache });
     expect(fetchMock).toHaveBeenCalledExactlyOnceWith(url, {
-      signal, cache, credentials: 'omit', headers: { Accept: 'application/octet-stream' },
+      signal, cache, credentials: 'omit', headers: { Accept: 'multipart/mixed, application/vnd.fgb' },
     });
     expect([...url.searchParams.keys()]).toEqual(['attribute', 'value']);
   });

@@ -18,6 +18,11 @@ beforeAll(async () => {
 });
 
 async function check(url: URL, count: number) {
+  // Single-file decoding checks use the explicit layer routes.
+  if (/\/fgb\/(collection|filter)$/.test(url.pathname)) {
+    url = new URL(url);
+    url.pathname = url.pathname.replace('/fgb/', '/fgb/Samfunnssikkerhet_0000_Norge_25833_Brannstasjoner_GML/');
+  }
   const response = await fetch(url);
   expect(response.ok).toBe(true);
   expect(response.headers.get('timing-allow-origin')).toBe('*');

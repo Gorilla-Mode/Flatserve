@@ -1,6 +1,6 @@
 import type { Feature } from 'geojson';
 import { collectionUrl, errorMessage, fetchFeatures, filterUrl } from './api';
-import type { HeaderMeta, RequestTiming } from './api';
+import type { FgbLayer, HeaderMeta, RequestTiming } from './api';
 import { containsBounds, expandBounds, WORLD } from './bounds';
 import type { Bounds } from './bounds';
 import { geometryIntersectsBounds } from './geometry';
@@ -9,10 +9,12 @@ interface Observer {
   onFeatures: (features: Feature[]) => void;
   onStatus: (status: { loading: boolean; error: string | null }) => void;
   onHeader: (header: HeaderMeta) => void;
-  onValues: (values: string[]) => void;
+  /** Legacy value discovery for callers using the sample dataset. The web uses index metadata. */
+  onValues?: (values: string[]) => void;
   onDiscovery: (status: { loading: boolean; error: string | null }) => void;
   onCoverage?: (bounds: Bounds[] | undefined) => void;
   onTiming?: (timing: RequestTiming) => void;
+  onLayers?: (layers: FgbLayer[]) => void;
 }
 
 export function distinctBrannvesen(features: Feature[]): string[] {
@@ -28,7 +30,8 @@ export class DatasetSession {
   private generation = 0;
   private disposed = false;
   private userId: number | null = null;
-  private selection = '';
+  private selection: string | null = null;
+  private attribute = 'brannvesen';
   private bufferEnabled = true;
   private bounds: Bounds[] = [];
   private coverage?: Bounds[];
@@ -51,13 +54,23 @@ export class DatasetSession {
     const current = () => !this.disposed && !request.signal.aborted;
     this.observer.onDiscovery({ loading: true, error: null });
     try {
+      const layers: FgbLayer[] = [];
+      const headers: HeaderMeta[] = [];
       const features = await this.read(collectionUrl(this.base, WORLD, 2), {
         signal: request.signal,
-        onHeader: (header) => { if (current()) this.observer.onHeader(header); },
+        onHeader: (header) => { headers.push(header); },
+        onLayer: (layer) => { layers.push(layer); },
         onTiming: (timing) => { if (current()) this.observer.onTiming?.(timing); },
       });
       if (!current()) return;
-      this.observer.onValues(distinctBrannvesen(features));
+      this.observer.onLayers?.(layers);
+      const extents = headers.map((header) => header.envelope)
+        .filter((extent) => extent?.length === 4 && Array.from(extent).every(Number.isFinite));
+      if (headers.length) this.observer.onHeader({ ...headers[0], envelope: extents.length ? new Float64Array([
+        Math.min(...extents.map((extent) => extent![0])), Math.min(...extents.map((extent) => extent![1])),
+        Math.max(...extents.map((extent) => extent![2])), Math.max(...extents.map((extent) => extent![3])),
+      ]) : null });
+      this.observer.onValues?.(distinctBrannvesen(features));
       this.observer.onDiscovery({ loading: false, error: null });
     } catch (error) {
       if (current()) this.observer.onDiscovery({ loading: false, error: errorMessage(error) });
@@ -66,13 +79,19 @@ export class DatasetSession {
 
   setBounds(bounds: Bounds[]): Promise<void> {
     this.bounds = bounds;
-    if (this.disposed || this.selection !== '') return Promise.resolve();
+    if (this.disposed || this.selection !== null) return Promise.resolve();
     this.publish();
     return this.schedule();
   }
 
-  setFilter(selection: string, bounds = this.bounds, bufferEnabled = this.bufferEnabled): Promise<void> {
-    this.selection = selection;
+  setFilter(selection: string | null, bounds = this.bounds, bufferEnabled = this.bufferEnabled, attribute = 'brannvesen'): Promise<void> {
+    return this.setTextFilter(selection ? { attribute, value: selection } : null, bounds, bufferEnabled);
+  }
+
+  setTextFilter(filter: { attribute: string; value: string } | null, bounds = this.bounds,
+    bufferEnabled = this.bufferEnabled): Promise<void> {
+    this.selection = filter?.value ?? null;
+    this.attribute = filter?.attribute ?? '';
     this.bounds = bounds;
     this.bufferEnabled = bufferEnabled;
     return this.refresh();
@@ -99,13 +118,13 @@ export class DatasetSession {
     this.observer.onCoverage?.(undefined);
     this.failedTarget = undefined;
     if (this.disposed) return Promise.resolve();
-    if (!this.selection) this.publish();
+    if (this.selection === null) this.publish();
     return this.schedule();
   }
 
   /** Publish only a changed visible subset; movement never changes filter matches. */
   private publish(): void {
-    const visible = this.selection ? this.features : this.features.filter((feature) =>
+    const visible = this.selection !== null ? this.features : this.features.filter((feature) =>
       geometryIntersectsBounds(feature.geometry, this.bounds));
     const signature = JSON.stringify(visible);
     if (signature === this.displayed) return;
@@ -123,14 +142,14 @@ export class DatasetSession {
     // Movement only updates the desired bounds while one logical request is active.
     if (this.viewRequest) return this.pending!;
     const selection = this.selection;
-    if (!selection && this.coverage && containsBounds(this.coverage, this.bounds)) {
+    if (selection === null && this.coverage && containsBounds(this.coverage, this.bounds)) {
       this.observer.onStatus({ loading: false, error: null });
       return Promise.resolve();
     }
     const requestBounds = this.bufferEnabled ? expandBounds(this.bounds) : this.bounds;
-    const target = selection || JSON.stringify(requestBounds);
-    if ((!selection && !requestBounds.length) || target === this.failedTarget) return Promise.resolve();
-    const urls = selection ? [filterUrl(this.base, selection)]
+    const target = selection !== null ? JSON.stringify([this.attribute, selection]) : JSON.stringify(requestBounds);
+    if ((selection === null && !requestBounds.length) || target === this.failedTarget) return Promise.resolve();
+    const urls = selection !== null ? [filterUrl(this.base, selection, this.attribute)]
       : requestBounds.map((bounds) => collectionUrl(this.base, bounds, userId));
     const generation = this.generation;
     const request = new AbortController();
@@ -139,7 +158,7 @@ export class DatasetSession {
     return this.pending;
   }
 
-  private async load(urls: URL[], requestBounds: Bounds[], target: string, selection: string,
+  private async load(urls: URL[], requestBounds: Bounds[], target: string, selection: string | null,
     generation: number, request: AbortController): Promise<void> {
     const current = () => !this.disposed && generation === this.generation && !request.signal.aborted;
     this.observer.onStatus({ loading: true, error: null });
@@ -148,13 +167,13 @@ export class DatasetSession {
       for (const url of urls) {
         const part = await this.read(url, {
           signal: request.signal,
-          cache: selection ? 'no-store' : undefined,
+          cache: selection !== null ? 'no-store' : undefined,
           onTiming: (timing) => { if (current()) this.observer.onTiming?.(timing); },
         });
         if (!current()) return;
         features.push(...part);
       }
-      if (!selection) {
+      if (selection === null) {
         this.coverage = requestBounds;
         this.observer.onCoverage?.(requestBounds);
       }
@@ -171,7 +190,7 @@ export class DatasetSession {
       this.viewRequest = undefined;
       this.pending = undefined;
       // A slow response may cover an old camera position. Catch up immediately.
-      if (!selection) await this.schedule();
+      if (selection === null) await this.schedule();
     }
   }
 
