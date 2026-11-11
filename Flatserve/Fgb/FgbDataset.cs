@@ -17,11 +17,7 @@ public record FgbDataset
     private readonly HeaderT _header;
     private readonly Dictionary<string, HashIndex> _textIndexes = new Dictionary<string, HashIndex>();
     private byte[] _exportHeader = [];
-    public IReadOnlyList<TextIndexMetadata> TextIndexes => _textIndexes
-        .OrderBy(index => index.Key, StringComparer.Ordinal)
-        .Select(index => new TextIndexMetadata(index.Key, HashIndex.Values.Order(StringComparer.Ordinal).ToArray()))
-        .ToArray();
-   
+    public IReadOnlyList<TextIndexMetadata> TextIndexesMeta;
 
     public FgbDataset(string filePath, IEnumerable<string>? textIndexes = null)
     {
@@ -57,6 +53,15 @@ public record FgbDataset
             if (_header.Columns?.Any(column => column.Name == attribute && column.Type == ColumnType.String) == true)
                 BuildTextIndex(attribute);
         }
+        
+        var metadata = new List<TextIndexMetadata>();
+
+        foreach (var (attribute, index) in _textIndexes)
+        {
+            metadata.Add(new TextIndexMetadata(attribute, index.Values.ToArray()));
+        }
+        
+        TextIndexesMeta = metadata.AsReadOnly();
     }
 
     private void CreateExportHeader(Header originalHeader)

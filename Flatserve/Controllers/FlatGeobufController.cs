@@ -13,7 +13,7 @@ public class FlatGeobufController(FgbDatasetRegistry registry) : ControllerBase
     [HttpGet("indexes")]
     public IActionResult Indexes() => Ok(new
     {
-        layers = registry.Datasets.Select(layer => new { id = layer.Key, indexes = layer.Value.TextIndexes })
+        layers = registry.Datasets.Select(layer => new { id = layer.Key, indexes = layer.Value.TextIndexesMeta })
     });
 
     private IActionResult Export(string? layerId, Func<FgbDataset, byte[]> query)

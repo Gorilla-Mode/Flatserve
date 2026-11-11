@@ -4,15 +4,15 @@ namespace Flatserve.Index;
 
 public sealed class HashIndex : IIndex<string>
 {
-    private static readonly Dictionary<string, List<FgbFeaturePtr>> Index = new Dictionary<string, List<FgbFeaturePtr>>();
-    public static IEnumerable<string> Values => Index.Keys;
+    private readonly Dictionary<string, List<FgbFeaturePtr>> _index = new Dictionary<string, List<FgbFeaturePtr>>();
+    public IEnumerable<string> Values => _index.Keys;
     
     public void Add(string value, FgbFeaturePtr featurePtr)
     {
-        if (!Index.TryGetValue(value, out var featurePtrs))
+        if (!_index.TryGetValue(value, out var featurePtrs))
         {
             featurePtrs = [];
-            Index.Add(value, featurePtrs);
+            _index.Add(value, featurePtrs);
         }
         
         featurePtrs.Add(featurePtr);
@@ -20,7 +20,7 @@ public sealed class HashIndex : IIndex<string>
 
     public IReadOnlyList<FgbFeaturePtr> Get(string key)
     {
-        if (!Index.TryGetValue(key, out var featurePtrs))
+        if (!_index.TryGetValue(key, out var featurePtrs))
         {
             return Array.Empty<FgbFeaturePtr>();
         }
