@@ -47,11 +47,15 @@ public record FgbDataset
         using var featureStream = new MemoryStream(_data, false);
         using var featureReader = new BinaryReader(featureStream);
         FeaturePtrs = GetFeaturePtrs(featureStream, featureReader);
-        
-        foreach (var attribute in (textIndexes ?? ["brannvesen"]).Distinct(StringComparer.Ordinal))
+
+        if (textIndexes != null)
         {
-            if (_header.Columns?.Any(column => column.Name == attribute && column.Type == ColumnType.String) == true)
-                BuildTextIndex(attribute);
+            foreach (var attribute in textIndexes)
+            {
+                if (_header.Columns?.Any(column => column.Name == attribute && column.Type == ColumnType.String) ==
+                    true)
+                    BuildTextIndex(attribute);
+            }
         }
         
         var metadata = new List<TextIndexMetadata>();

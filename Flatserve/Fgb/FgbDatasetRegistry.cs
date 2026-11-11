@@ -20,7 +20,7 @@ public sealed class FgbDatasetRegistry
         if (paths.Length == 0)
             throw new InvalidOperationException("The configured FGB directory contains no .fgb files.");
 
-        var attributes = configuration.GetSection("Fgb:TextIndexes").Get<string[]>() ?? ["brannvesen"];
+        var attributes = configuration.GetSection("Fgb:TextIndexes").Get<string[]>();
         
         foreach (var path in paths)
         {
