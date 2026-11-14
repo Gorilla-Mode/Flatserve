@@ -18,10 +18,11 @@ all dataset calls with the same TraceId, regardless of file order. A missing
 GetBytes match is a gap, rather than a measured zero. TraceIds are expected to
 identify one request; ambiguous matches are warned about and left as gaps.
 
-GC pauses are sampled observations, not exact collection timestamps or a complete
-GC history. gc_total records are cumulative and are ignored. Bar widths are only
-for visibility and do not represent pause intervals. Pauses observed at the same
-timestamp overlap; horizontal caps show their individual durations.
+GC records with StartTimestamp and EndTimestamp shade actual runtime suspension
+intervals in red. Restart the updated server to record these boundaries. Legacy
+sampled observations remain timestamp markers and are never assigned intervals.
+gc_total records are cumulative and are ignored. Lower-panel bar widths are only
+for visibility, not pause intervals; caps distinguish overlapping pause durations.
 """
 
 import argparse
@@ -49,6 +50,8 @@ class Metric:
     duration_ms: float
     trace_id: str | None
     line: int
+    start: datetime | None = None
+    end: datetime | None = None
 
 
 @dataclass
@@ -56,6 +59,15 @@ class Metrics:
     records: list[Metric]
     ignored: int = 0
     malformed: int = 0
+
+
+def parse_timestamp(value, field: str) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be an ISO 8601 string with a timezone")
+    timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if timestamp.utcoffset() is None:
+        raise ValueError(f"{field} must include a timezone")
+    return timestamp.astimezone(timezone.utc)
 
 
 def load_metrics(path: Path) -> Metrics:
@@ -75,12 +87,7 @@ def load_metrics(path: Path) -> Metrics:
                 if kind not in RECORD_TYPES:
                     metrics.ignored += 1
                     continue
-                timestamp = record.get("Timestamp")
-                if not isinstance(timestamp, str):
-                    raise ValueError("Timestamp must be an ISO 8601 string with a timezone")
-                timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                if timestamp.utcoffset() is None:
-                    raise ValueError("Timestamp must include a timezone")
+                timestamp = parse_timestamp(record.get("Timestamp"), "Timestamp")
                 duration = record.get("DurationUs")
                 if (isinstance(duration, bool) or not isinstance(duration, (int, float))
                         or not math.isfinite(duration) or duration < 0):
@@ -88,8 +95,16 @@ def load_metrics(path: Path) -> Metrics:
                 trace_id = record.get("TraceId")
                 if trace_id is not None and (not isinstance(trace_id, str) or not trace_id.strip()):
                     raise ValueError("TraceId must be a non-empty string or null")
+                start = end = None
+                if kind == "gc_pause" and ("StartTimestamp" in record or "EndTimestamp" in record):
+                    start = parse_timestamp(record.get("StartTimestamp"), "StartTimestamp")
+                    end = parse_timestamp(record.get("EndTimestamp"), "EndTimestamp")
+                    if end < start:
+                        raise ValueError("EndTimestamp must not precede StartTimestamp")
+                    timestamp = end
+                    duration = (end - start).total_seconds() * 1_000_000
                 metrics.records.append(Metric(
-                    timestamp.astimezone(timezone.utc), kind, duration / 1000, trace_id, line_number
+                    timestamp, kind, duration / 1000, trace_id, line_number, start, end
                 ))
             except (ValueError, OverflowError) as error:
                 metrics.malformed += 1
@@ -128,16 +143,19 @@ def plot_metrics(metrics: Metrics, source: Path):
     requests = [record for record in metrics.records if record.kind == "request"]
     calls = [record for record in metrics.records if record.kind == "get_bytes"]
     pauses = [record for record in metrics.records if record.kind == "gc_pause"]
+    intervals = [pause for pause in pauses if pause.start is not None]
+    sampled = [pause for pause in pauses if pause.start is None]
     get_bytes_ms, unmatched = match_get_bytes(requests, calls)
     matched_requests = sum(not math.isnan(value) for value in get_bytes_ms)
     summary = (
         f"Requests: {len(requests)} | GetBytes: {len(calls)} calls, {matched_requests} matched requests, "
         f"{unmatched} unmatched calls\n"
-        f"GC: {len(pauses)} sampled pauses | Ignored: {metrics.ignored} | Malformed: {metrics.malformed}"
+        f"GC: {len(intervals)} recorded intervals, {len(sampled)} sampled pauses | "
+        f"Ignored: {metrics.ignored} | Malformed: {metrics.malformed}"
     )
     print(summary)
 
-    origin = metrics.records[0].timestamp if metrics.records else None
+    origin = min((record.start or record.timestamp for record in metrics.records), default=None)
 
     def elapsed(record: Metric) -> float:
         return (record.timestamp - origin).total_seconds()
@@ -161,16 +179,25 @@ def plot_metrics(metrics: Metrics, source: Path):
     span = elapsed(metrics.records[-1]) if metrics.records else 0
     bar_width = max(span, 1) / 400
     # Draw larger bars first so smaller pauses at the same timestamp stay visible.
-    ordered_pauses = sorted(pauses, key=lambda pause: pause.duration_ms, reverse=True)
-    gc_ax.bar([elapsed(pause) for pause in ordered_pauses],
-              [pause.duration_ms for pause in ordered_pauses], width=bar_width,
-              color="tab:red", edgecolor="tab:red", alpha=0.65,
-              label="GC pause (sampled observation)")
+    for series, label, alpha in ((intervals, "GC pause (recorded interval)", 0.8),
+                                 (sampled, "GC pause (sampled observation)", 0.45)):
+        if series:
+            ordered = sorted(series, key=lambda pause: pause.duration_ms, reverse=True)
+            gc_ax.bar([elapsed(pause) for pause in ordered],
+                      [pause.duration_ms for pause in ordered], width=bar_width,
+                      color="tab:red", edgecolor="tab:red", alpha=alpha, label=label)
+    # Keep a legend even when the GC series is absent.
+    if not pauses:
+        gc_ax.plot([], [], color="tab:red", label="GC pause")
     gc_ax.plot([elapsed(pause) for pause in pauses], [pause.duration_ms for pause in pauses],
                linestyle="none", marker="_", color="tab:red", markersize=7)
-    for index, timestamp in enumerate(sorted({pause.timestamp for pause in pauses})):
+    for index, pause in enumerate(intervals):
+        timing_ax.axvspan((pause.start - origin).total_seconds(), (pause.end - origin).total_seconds(),
+                          color="red", alpha=0.2, linewidth=0, zorder=0,
+                          label="GC pause interval" if index == 0 else None)
+    for index, timestamp in enumerate(sorted({pause.timestamp for pause in sampled})):
         timing_ax.axvline((timestamp - origin).total_seconds(), color="tab:red", alpha=0.4,
-                          linewidth=0.8, label="GC observation" if index == 0 else None)
+                          linewidth=0.8, label="GC sampled observation" if index == 0 else None)
     if not pauses:
         gc_ax.text(0.5, 0.5, "No GC pause observations", transform=gc_ax.transAxes, ha="center")
 
@@ -187,7 +214,8 @@ def plot_metrics(metrics: Metrics, source: Path):
     padding = max(span * 0.01, bar_width)
     gc_ax.set_xlim(-padding, span + padding if span else 1)
     figure.text(0.5, 0.025,
-                "GC timestamps are sampled observations; bar widths do not represent pause intervals.\n"
+                "Red shading shows recorded GC suspension intervals; legacy samples are markers only.\n"
+                "Lower-panel bar widths do not represent pause intervals. "
                 "Overlapping pauses have individual caps. Missing GetBytes matches appear as gaps.",
                 ha="center", fontsize=9)
     figure.tight_layout(rect=(0, 0.07, 1, 0.87))

@@ -67,6 +67,8 @@ UserCollection.AddUser(new User
 
 var app = builder.Build();
 
+using var gcPauses = new GcPauseListener(metrics, app.Logger);
+
 var gcLogGate = new object();
 var lastGcIndex = GC.GetGCMemoryInfo().Index;
 
@@ -82,30 +84,6 @@ await using var gcTimer = new Timer(_ =>
         lastGcIndex = gc.Index;
 
         var observedAt = DateTimeOffset.UtcNow;
-        var pauseIndex = 0;
-        foreach (var pause in gc.PauseDurations)
-        {
-            if (pause == TimeSpan.Zero)
-                continue;
-
-            metrics.Write(new
-            {
-                Timestamp = observedAt,
-                Type = "gc_pause",
-                Collection = gc.Index,
-                Generation = gc.Generation,
-                PauseIndex = pauseIndex++,
-                DurationUs = pause.TotalMicroseconds,
-                SampleIntervalMs = 1000
-            });
-
-            app.Logger.LogInformation(
-                "\u001b[91mGC {Index}, generation {Generation}: pause {PauseUs:F3} µs\u001b[0m",
-                gc.Index,
-                gc.Generation,
-                pause.TotalMicroseconds);
-        }
-
         var totalPause = GC.GetTotalPauseDuration();
         metrics.Write(new
         {
