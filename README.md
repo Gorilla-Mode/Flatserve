@@ -59,6 +59,15 @@ before `/collection` and use `Accept: application/vnd.fgb`.
 
 *See also: [Flatserve.http](./Flatserve/test/http/Flatserve.http)*
 
+## Generate metrics
+
+With the API already running, send requests for 60 seconds at a target of 10
+requests per second (600 planned requests):
+
+```sh
+python3 scripts/generate_metrics.py --duration 60 --rps 10
+```
+
 ## Plot metrics
 
 Run from the repository root to display the metrics chart and save it as `chart.png`:
