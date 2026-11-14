@@ -22,8 +22,10 @@ public record FgbDataset
     private byte[] _exportHeader = [];
     public IReadOnlyList<TextIndexMetadata> TextIndexesMeta;
     private readonly ILogger<FgbDataset> _logger;
+    private readonly MetricsWriter _metrics;
+    private readonly string _dataset;
 
-    public FgbDataset(string filePath, ILogger<FgbDataset> logger, IEnumerable<string>? textIndexes = null)
+    public FgbDataset(string filePath, ILogger<FgbDataset> logger, MetricsWriter metrics, IEnumerable<string>? textIndexes = null)
     {
         var raw = File.ReadAllBytes(filePath);
 
@@ -71,6 +73,8 @@ public record FgbDataset
         
         TextIndexesMeta = metadata.AsReadOnly();
         _logger = logger;
+        _metrics = metrics;
+        _dataset = Path.GetFileNameWithoutExtension(filePath);
     }
 
     private void CreateExportHeader(Header originalHeader)
@@ -96,6 +100,7 @@ public record FgbDataset
         if (_spatialIndex.Length == 0)
             throw new InvalidOperationException("Spatial index is empty");
         
+        var started = Stopwatch.GetTimestamp();
         using var output = new MemoryStream();
         output.Write(_exportHeader);
         
@@ -110,6 +115,8 @@ public record FgbDataset
         
         var start = Stopwatch.GetTimestamp();
         var events = new StringBuilder();
+        var featureMetrics = new List<object>();
+        var written = 0;
         
         var intersects = PackedRTree.StreamSearch(
             _header.FeaturesCount,
@@ -117,6 +124,7 @@ public record FgbDataset
             bbox,
             ReadNode);
         
+        var searchSetupUs = Stopwatch.GetElapsedTime(start).TotalMicroseconds;
         events.Append(
             $"\tWalked R-Tree in {Stopwatch.GetElapsedTime(start).TotalMicroseconds:F3} μs\n");
 
@@ -128,6 +136,7 @@ public record FgbDataset
             var startIntersect = Stopwatch.GetTimestamp();
             events.Append($"\t\tProcessing feature {intersect.Index} at offset {intersect.Offset}\n");
             
+            var startDecode = Stopwatch.GetTimestamp();
             ulong payloadLength = BinaryPrimitives.ReadUInt32LittleEndian(
                 _data.AsSpan(
                     checked((int)intersect.Offset),
@@ -142,28 +151,54 @@ public record FgbDataset
                 new ByteBuffer(GetRawFeatureBytes(pointer)),
                 _header);
 
+            var decodeUs = Stopwatch.GetElapsedTime(startDecode).TotalMicroseconds;
             var startAuthCheck = Stopwatch.GetTimestamp();
-            
-            if (feature.Geometry is null || !allowedArea.Intersects(feature.Geometry))
-            {
-                 continue;  
-            }
-            
-            events.Append(
-                $"\t\t  Intersected with allowed area in {Stopwatch.GetElapsedTime(startAuthCheck).TotalMicroseconds:F3} μs\n");
-            
-            WriteFeature(output, pointer); 
-            
-            events.Append(
-                $"\t\t  Written to buffer in {Stopwatch.GetElapsedTime(startIntersect).TotalMicroseconds:F3} μs\n");
-        }
-        
-        events.Append(
-            $"\tProcessed {FeaturePtrs.Count} features in {Stopwatch.GetElapsedTime(start).TotalMilliseconds:F3} ms\n");
-        
-        _logger.LogInformation("GetBytes:\n{Events}", events.ToString());
+            var accepted = feature.Geometry is not null && allowedArea.Intersects(feature.Geometry);
+            var authUs = Stopwatch.GetElapsedTime(startAuthCheck).TotalMicroseconds;
+            var writeUs = 0d;
 
-        return output.ToArray();
+            if (accepted)
+            {
+                events.Append($"\t\t  Intersected with allowed area in {authUs:F3} μs\n");
+                var startWrite = Stopwatch.GetTimestamp();
+                WriteFeature(output, pointer);
+                writeUs = Stopwatch.GetElapsedTime(startWrite).TotalMicroseconds;
+                written++;
+                events.Append(
+                    $"\t\t  Written to buffer in {Stopwatch.GetElapsedTime(startIntersect).TotalMicroseconds:F3} μs\n");
+            }
+
+            featureMetrics.Add(new
+            {
+                FeatureIndex = intersect.Index,
+                Offset = intersect.Offset,
+                Accepted = accepted,
+                DecodeUs = decodeUs,
+                AuthorizationUs = authUs,
+                WriteUs = writeUs,
+                DurationUs = Stopwatch.GetElapsedTime(startIntersect).TotalMicroseconds
+            });
+        }
+
+        var result = output.ToArray();
+        var elapsed = Stopwatch.GetElapsedTime(started);
+        _metrics.Write(new
+        {
+            Timestamp = DateTimeOffset.UtcNow,
+            Type = "get_bytes",
+            TraceId = Activity.Current?.TraceId.ToString(),
+            Dataset = _dataset,
+            DurationUs = elapsed.TotalMicroseconds,
+            SearchSetupUs = searchSetupUs,
+            CandidateCount = featureMetrics.Count,
+            WrittenCount = written,
+            Bytes = result.Length,
+            Features = featureMetrics
+        });
+
+        events.Append($"\tProcessed {written} features in {elapsed.TotalMilliseconds:F3} ms\n");
+        _logger.LogInformation("GetBytes:\n{Events}", events.ToString());
+        return result;
     }
     
     public Byte[] GetFeatureBytes(FgbFeaturePtr featurePtr)
