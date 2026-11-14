@@ -149,14 +149,30 @@ public record FgbDataset
                 intersect.Offset,
                 checked(payloadLength + FgbFeaturePtr.LengthPrefix));
             
-            var feature = FeatureConversions.FromByteBuffer(factory,
-                sequenceFactory,
-                new ByteBuffer(GetRawFeatureBytes(pointer)),
-                _header);
+            var rawFeature = Feature.GetRootAsFeature(
+                new ByteBuffer(GetRawFeatureBytes(pointer)));
+
+            NetTopologySuite.Geometries.Geometry? geometry = null;
+
+            if (rawFeature.Geometry.HasValue)
+            {
+                var rawGeometry = rawFeature.Geometry.Value;
+
+                try
+                {
+                    geometry = GeometryConversions.FromFlatbuf(
+                        factory, sequenceFactory, ref rawGeometry, _header);
+                }
+                catch (ArgumentException)
+                {
+                    // Preserve the existing decoder's handling of invalid geometry.
+                }
+            }
 
             var decodeUs = recordMetrics ? Stopwatch.GetElapsedTime(startDecode).TotalMicroseconds : 0;
             var startAuthCheck = measure ? Stopwatch.GetTimestamp() : 0;
-            var accepted = feature.Geometry is not null && allowedArea.Intersects(feature.Geometry);
+            var accepted = geometry is not null &&
+                           allowedArea.Intersects(geometry);
             var authUs = measure ? Stopwatch.GetElapsedTime(startAuthCheck).TotalMicroseconds : 0;
             var writeUs = 0d;
 
