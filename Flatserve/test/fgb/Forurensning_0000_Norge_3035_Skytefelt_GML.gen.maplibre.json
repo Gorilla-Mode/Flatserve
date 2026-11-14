@@ -102,8 +102,8 @@
         ]
       ],
       "layout": {
-        "icon-allow-overlap": false,
-        "icon-ignore-placement": false,
+        "icon-allow-overlap": true,
+        "icon-ignore-placement": true,
         "icon-image": "star-red",
         "icon-size": 0.5,
         "symbol-placement": "point"

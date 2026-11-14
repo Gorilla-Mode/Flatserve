@@ -9,7 +9,7 @@ import type { DataBatch } from './dataset';
 
 export async function fetchStylesheet(base: string, signal: AbortSignal) {
   const response = await fetch(new URL('fgb/style', normalizeApiUrl(base)), {
-    signal, credentials: 'omit', headers: { Accept: 'application/json' },
+    signal, cache: 'no-store', credentials: 'omit', headers: { Accept: 'application/json' },
   });
   if (!response.ok) throw new Error(`Stylesheet API returned HTTP ${response.status}.`);
   let style: StyleSpecification;

@@ -35,11 +35,13 @@ function fakeMap(failLayer = '') {
   return { map, sources, asMap: map as unknown as Map };
 }
 
-it('fetches using the API base path, validates JSON, and supports styles without embedded icons', async () => {
+it('fetches uncached styles using the API base path, validates JSON, and supports styles without embedded icons', async () => {
   const fetchMock = vi.fn().mockResolvedValue(Response.json(style));
   vi.stubGlobal('fetch', fetchMock);
-  expect((await fetchStylesheet('https://example.org/proxy', new AbortController().signal)).style).toEqual(style);
+  const { signal } = new AbortController();
+  expect((await fetchStylesheet('https://example.org/proxy', signal)).style).toEqual(style);
   expect(fetchMock.mock.calls[0][0].href).toBe('https://example.org/proxy/fgb/style');
+  expect(fetchMock.mock.calls[0][1]).toMatchObject({ signal, cache: 'no-store', credentials: 'omit' });
 });
 
 it.each([new Response('', { status: 404 }), new Response('invalid'), Response.json({ version: 7 })])(
