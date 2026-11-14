@@ -59,6 +59,17 @@ before `/collection` and use `Accept: application/vnd.fgb`.
 
 *See also: [Flatserve.http](./Flatserve/test/http/Flatserve.http)*
 
+## Logging and metrics
+
+Configure the switches independently in `Flatserve/appsettings.json`:
+
+```json
+{
+  "Logging": { "Enabled": true },
+  "Metrics": { "Enabled": true }
+}
+```
+
 ## Generate metrics
 
 With the API already running, send requests for 60 seconds at a target of 10
