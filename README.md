@@ -58,3 +58,13 @@ The collection file is a multipart body; its boundary is recorded in
 before `/collection` and use `Accept: application/vnd.fgb`.
 
 *See also: [Flatserve.http](./Flatserve/test/http/Flatserve.http)*
+
+## Plot metrics
+
+Run from the repository root to display the metrics chart and save it as `chart.png`:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install matplotlib
+.venv/bin/python scripts/plot_metrics.py --output chart.png
+```

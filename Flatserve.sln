@@ -8,6 +8,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution 
 		compose.yaml = compose.yaml
 		.gitignore = .gitignore
 		.gitattributes = .gitattributes
+		scripts\__pycache__\plot_metrics.cpython-314.pyc = scripts\__pycache__\plot_metrics.cpython-314.pyc
+		scripts\plot_metrics.py = scripts\plot_metrics.py
 	EndProjectSection
 EndProject
 Global
