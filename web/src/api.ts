@@ -2,8 +2,42 @@ import { deserialize } from 'flatgeobuf/geojson';
 import type { HeaderMeta } from 'flatgeobuf/lib/mjs/header-meta.js';
 import type { Feature, Polygon } from 'geojson';
 import type { Bounds } from './bounds';
+import { readFgbParts } from './multipart';
 
 export type { HeaderMeta };
+
+export interface FgbLayer { id: string; header: HeaderMeta }
+export type LayerFeature = Feature & { fgbLayerId?: string };
+export const featureLayer = (feature: Feature): string => (feature as LayerFeature).fgbLayerId ?? 'dataset';
+
+export interface TextIndex { attribute: string; values: string[]; layers: string[] }
+
+/** Discover indexes the server built, rather than inferring them from FGB columns. */
+export async function fetchIndexes(base: string, signal: AbortSignal): Promise<TextIndex[]> {
+  signal.throwIfAborted();
+  const response = await fetch(new URL('fgb/indexes', normalizeApiUrl(base)), {
+    signal, credentials: 'omit', cache: 'no-store', headers: { Accept: 'application/json' },
+  });
+  if (!response.ok) throw new Error(`API returned HTTP ${response.status}.`);
+  const metadata = await response.json();
+  signal.throwIfAborted();
+  if (!metadata || !Array.isArray(metadata.layers)) throw new Error('Invalid index metadata.');
+  const indexes = new Map<string, { values: Set<string>; layers: string[] }>();
+  for (const layer of metadata.layers) {
+    if (!layer || typeof layer.id !== 'string' || !Array.isArray(layer.indexes)) throw new Error('Invalid index metadata.');
+    for (const index of layer.indexes) {
+      if (!index || typeof index.attribute !== 'string' || !index.attribute || !Array.isArray(index.values)
+        || !index.values.every((value: unknown) => typeof value === 'string')) throw new Error('Invalid index metadata.');
+      const entry = indexes.get(index.attribute) ?? { values: new Set<string>(), layers: [] };
+      for (const value of index.values) entry.values.add(value);
+      if (!entry.layers.includes(layer.id)) entry.layers.push(layer.id);
+      indexes.set(index.attribute, entry);
+    }
+  }
+  return [...indexes].sort(([a], [b]) => a.localeCompare(b)).map(([attribute, index]) => ({
+    attribute, values: [...index.values].sort((a, b) => a.localeCompare(b, 'nb')), layers: index.layers,
+  }));
+}
 
 export function normalizeApiUrl(input: string): string {
   let url: URL;
@@ -30,9 +64,9 @@ export function collectionUrl(base: string, bounds: Bounds, userId: number): URL
   return url;
 }
 
-export function filterUrl(base: string, value: string): URL {
+export function filterUrl(base: string, value: string, attribute = 'brannvesen'): URL {
   const url = new URL('fgb/filter', normalizeApiUrl(base));
-  url.searchParams.set('attribute', 'brannvesen');
+  url.searchParams.set('attribute', attribute);
   url.searchParams.set('value', value);
   return url;
 }
@@ -82,6 +116,7 @@ export interface DecodeOptions {
   cache?: RequestCache;
   onBatch?: (features: Feature[]) => void;
   onHeader?: (header: HeaderMeta) => void;
+  onLayer?: (layer: FgbLayer) => void;
   batchSize?: number;
   onTiming?: (timing: RequestTiming) => void;
 }
@@ -99,6 +134,23 @@ export async function decodeResponse(response: Response, options: DecodeOptions)
   signal.throwIfAborted();
   if (!response.ok) throw new Error(`API returned HTTP ${response.status}.`);
   if (!response.body) throw new Error('The API returned no response stream.');
+
+  if (/^multipart\/mixed\b/i.test(response.headers.get('content-type') ?? '')) {
+    const parts = await readFgbParts(response, signal);
+    const all: Feature[] = [];
+    for (const part of parts) {
+      signal.throwIfAborted();
+      const tag = (features: Feature[]) => features.map((feature) => ({ ...feature, fgbLayerId: part.id }));
+      const features = await decodeResponse(new Response(part.bytes), {
+        ...options,
+        onLayer: undefined,
+        onHeader: (header) => { onHeader?.(header); options.onLayer?.({ id: part.id, header }); },
+        onBatch: (batch) => onBatch?.([...all, ...tag(batch)]),
+      });
+      all.push(...tag(features));
+    }
+    return all;
+  }
 
   // Own the reader so abort/early-exit also releases the decoder's underlying stream.
   const reader = response.body.getReader();
@@ -123,6 +175,7 @@ export async function decodeResponse(response: Response, options: DecodeOptions)
       headerMetaFn: (header) => {
         signal.throwIfAborted();
         onHeader?.(header);
+        options.onLayer?.({ id: 'dataset', header });
       },
     })) {
       signal.throwIfAborted();
@@ -180,7 +233,7 @@ export async function fetchFeatures(url: URL, options: DecodeOptions): Promise<F
       signal: options.signal,
       cache: options.cache,
       credentials: 'omit',
-      headers: { Accept: 'application/octet-stream' },
+      headers: { Accept: 'multipart/mixed, application/vnd.fgb' },
     });
     const headersReceived = performance.now();
     const features = await decodeResponse(response, options);

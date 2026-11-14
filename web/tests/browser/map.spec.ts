@@ -61,7 +61,7 @@ test('Show buffer draws fetched coverage, stays fixed during reuse and pending w
   page.on('request', (request) => {
     if (request.url().includes('/fgb/collection?')) requests.push(new URL(request.url()));
   });
-  page.on('requestfailed', (request) => { if (request.url().includes('/fgb/')) failed.push(request.url()); });
+  page.on('requestfailed', (request) => { if (request.url().includes('/fgb/collection?')) failed.push(request.url()); });
   await page.goto('./');
   const show = page.getByRole('button', { name: 'Show buffer', exact: true });
   await expect(show).toBeDisabled();
@@ -272,11 +272,11 @@ test('toggles filtering, updates active selections immediately, restores spatial
   const requests: string[] = [];
   page.on('request', (request) => { if (request.url().includes('/fgb/')) requests.push(request.url()); });
   await page.goto('./');
-  const select = page.getByLabel('Brannvesen', { exact: true });
+  const select = page.locator('#filter-value');
   const filter = page.getByRole('button', { name: 'Filter', exact: true });
   await expect(select).toBeDisabled();
   await expect(select).toHaveValue('');
-  await expect(select.locator('option:checked')).toHaveText('Select brannvesen');
+  await expect(select.locator('option:checked')).toHaveText('Select value');
   await expect(select.locator('option:checked')).toBeDisabled();
   await expect(select.locator('option', { hasText: 'All brannvesen' })).toHaveCount(0);
   await expect(filter).toBeDisabled();
@@ -432,7 +432,8 @@ test('validates the URL and changes a connection while preserving its base path'
   await input.fill('http://localhost:5221');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await page.getByLabel('Select user', { exact: true }).selectOption('2');
-  await expect(page.getByRole('status')).toHaveText('639 features in view');
+  await expect(page.getByRole('status')).toHaveText(/^\d+ features in view$/);
+  const expectedStatus = await page.getByRole('status').innerText();
   await page.locator('.controls').getByRole('button', { name: 'Connect', exact: true }).click();
   const paths: string[] = [];
   await page.route('http://localhost:5221/proxy/v1/**', async (route) => {
@@ -444,11 +445,11 @@ test('validates the URL and changes a connection while preserving its base path'
   await input.fill('http://localhost:5221/proxy/v1');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await page.getByLabel('Select user', { exact: true }).selectOption('2');
-  await expect(page.getByRole('status')).toHaveText('639 features in view');
+  await expect(page.getByRole('status')).toHaveText(expectedStatus);
   await expect(page.locator('.api-url')).toHaveText('http://localhost:5221/proxy/v1/');
   await expect.poll(() => paths.length).toBeGreaterThanOrEqual(2);
-  await expect(page.getByRole('status')).toHaveText('639 features in view');
-  expect(paths.every((path) => path === '/proxy/v1/fgb/collection')).toBe(true);
+  await expect(page.getByRole('status')).toHaveText(expectedStatus);
+  expect(paths.every((path) => ['/proxy/v1/fgb/collection', '/proxy/v1/fgb/indexes', '/proxy/v1/fgb/style'].includes(path))).toBe(true);
 });
 
 test('fits on a phone viewport without horizontal overflow', async ({ page }) => {

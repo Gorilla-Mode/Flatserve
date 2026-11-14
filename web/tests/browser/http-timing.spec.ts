@@ -1,7 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { expect } from '@playwright/test';
 import { test } from './helpers';
-import { filterUrl } from '../../src/api';
+import { decodeResponse, filterUrl } from '../../src/api';
 
 test('live HTTP timing matches the exchange for cold and repeated filter requests', async ({ page, request }, testInfo) => {
   const api = 'http://localhost:5221';
@@ -27,7 +27,7 @@ test('live HTTP timing matches the exchange for cold and repeated filter request
       const response = await fetch(url, { cache: 'no-store', credentials: 'omit', headers: { Accept: accept } });
       const bytes = Array.from(new Uint8Array(await response.arrayBuffer()));
       const finished = performance.now();
-      return { status: response.status, bytes, totalMs: finished - started };
+      return { status: response.status, contentType: response.headers.get('content-type')!, bytes, totalMs: finished - started };
     }, { url, accept: example[2] });
     expect(sample.status).toBe(200);
     const timing = await page.evaluate((url) => {
@@ -48,7 +48,12 @@ test('live HTTP timing matches the exchange for cold and repeated filter request
     const body = await response.body();
     expect(response.ok()).toBe(true);
     expect(response.headers()['timing-allow-origin']).toBe('*');
-    expect(body).toEqual(Buffer.from(sample.bytes));
+    const decoded = (bytes: Uint8Array, contentType: string) => decodeResponse(new Response(new Uint8Array(bytes), {
+      headers: { 'Content-Type': contentType },
+    }), { signal: new AbortController().signal });
+    // Multipart boundaries are unique to each response; compare decoded layers.
+    expect(await decoded(body, response.headers()['content-type']))
+      .toEqual(await decoded(new Uint8Array(sample.bytes), sample.contentType));
     samples.push({ phase: `testing-file client after ${phase}`, totalMs: performance.now() - started, bytes: body.length });
   }
 

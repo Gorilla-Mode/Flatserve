@@ -12,7 +12,7 @@ test.beforeEach(async ({ page }) => {
 test('discovers before selection, supports keyboard selection, preserves settings and active filters, and resets on reconnect', async ({ page }) => {
   const requests: URL[] = [];
   page.on('request', (request) => {
-    if (request.url().includes('/fgb/')) requests.push(new URL(request.url()));
+    if (request.url().includes('/fgb/collection?') || request.url().includes('/fgb/filter?')) requests.push(new URL(request.url()));
   });
   await page.goto('./');
   await page.getByLabel('API URL', { exact: true }).fill(api);
@@ -31,7 +31,7 @@ test('discovers before selection, supports keyboard selection, preserves setting
   await expect(filter).toBeDisabled();
   await bbox.click();
   await show.click();
-  await expect(page.getByRole('status')).toHaveText('Select a user to load stations.');
+  await expect(page.getByRole('status')).toHaveText('Select a user to load layers.');
   await page.waitForTimeout(200);
   expect(requests).toHaveLength(1);
   expect(requests[0].searchParams.get('userId')).toBe('2');
@@ -86,7 +86,7 @@ test('discovers before selection, supports keyboard selection, preserves setting
   await expect(user).toHaveValue('');
   await expect(attribute).toHaveValue('');
   await expect(filter).toHaveAttribute('aria-pressed', 'false');
-  await expect(page.getByRole('status')).toHaveText('Select a user to load stations.');
+  await expect(page.getByRole('status')).toHaveText('Select a user to load layers.');
   await expect(page.locator('.timings-point')).toHaveCount(1);
   await user.selectOption('0');
   await page.reload();
@@ -115,9 +115,9 @@ for (const id of ['0', '1']) {
     await page.getByLabel('API URL', { exact: true }).fill(api);
     await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
     await expect(user).toHaveValue(id);
-    await expect(page.getByRole('alert')).toContainText('Filters: API returned HTTP 503.');
+    await expect(page.getByRole('alert')).toContainText('Layers: API returned HTTP 503.');
     fail = false;
-    await page.getByRole('button', { name: 'Retry filters', exact: true }).click();
+    await page.getByRole('button', { name: 'Retry layers', exact: true }).click();
     await expect(page.getByLabel('Brannvesen', { exact: true }).locator('option', { hasText: 'Oslo brann- og redningsetat' })).toHaveCount(1);
     expect(discovery).toHaveLength(2);
     expect(discovery.every((url) => url.searchParams.get('userId') === '2')).toBe(true);
@@ -157,7 +157,8 @@ test('switching users cancels a pending map response without restarting pending 
   releaseMap();
   await expect.poll(() => finished).toBe(true);
   await expect(page.getByRole('status')).toHaveText(status);
-  await expect(page.getByText('Loading filter values…')).toBeVisible();
+  // Index metadata is independent of the pending feature discovery.
+  await expect(page.getByLabel('Index', { exact: true })).toBeEnabled();
   expect(requests.filter((url) => url.searchParams.get('minX') === '-180')).toHaveLength(1);
   releaseDiscovery();
   await expect(page.getByLabel('Brannvesen', { exact: true }).locator('option', { hasText: 'Oslo brann- og redningsetat' })).toHaveCount(1);

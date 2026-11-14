@@ -5,6 +5,7 @@ namespace Flatserve.Index;
 public sealed class HashIndex : IIndex<string>
 {
     private readonly Dictionary<string, List<FgbFeaturePtr>> _index = new Dictionary<string, List<FgbFeaturePtr>>();
+    public IEnumerable<string> Values => _index.Keys;
     
     public void Add(string value, FgbFeaturePtr featurePtr)
     {

@@ -8,6 +8,7 @@ test.use({ hasTouch: true });
 const base = `https://timings.example/${'long-api-path-'.repeat(18)}`;
 const filterName = 'Sør & Øst / '.repeat(25);
 const bytes = Buffer.from(encoded([station(filterName)]));
+const indexMetadata = { layers: [{ id: 'fixture', indexes: [{ attribute: 'brannvesen', values: ['A', 'B', filterName] }] }] };
 const timingHeaders = { 'Timing-Allow-Origin': '*' };
 const points = (page: Page) => page.locator('.timings-point');
 const details = (page: Page) => page.getByRole('dialog', { name: 'Request details' });
@@ -48,6 +49,8 @@ for (const empty of [false, true]) {
     const filtered = empty ? Buffer.from(headerOnly(discovery)) : Buffer.from(encoded([station('match')]));
     const requests: string[] = [];
     await page.route('https://timings.example/**', (route) => {
+      if (route.request().url().endsWith('/fgb/style')) return route.fulfill({ status: 404 });
+      if (route.request().url().endsWith('/fgb/indexes')) return route.fulfill({ json: indexMetadata });
       const url = route.request().url();
       if (new URL(url).pathname.endsWith('/filter')) requests.push(url);
       return route.fulfill({ body: url.includes('/filter?') ? filtered : discovery, headers: timingHeaders });
@@ -98,6 +101,8 @@ test('empty and single-point charts, both metrics, click/keyboard dismissal and 
   let releaseStyle!: () => void;
   const style = new Promise<void>((resolve) => { releaseStyle = resolve; });
   await page.route('https://tiles.openfreemap.org/**', async (route) => {
+      if (route.request().url().endsWith('/fgb/style')) return route.fulfill({ status: 404 });
+      if (route.request().url().endsWith('/fgb/indexes')) return route.fulfill({ json: indexMetadata });
     await style;
     await route.fulfill({ json: { version: 8, sources: {}, layers: [] } });
   });
@@ -106,6 +111,8 @@ test('empty and single-point charts, both metrics, click/keyboard dismissal and 
   let releaseRequests!: () => void;
   const held = new Promise<void>((resolve) => { releaseRequests = resolve; });
   await page.route('https://timings.example/**', async (route) => {
+      if (route.request().url().endsWith('/fgb/style')) return route.fulfill({ status: 404 });
+      if (route.request().url().endsWith('/fgb/indexes')) return route.fulfill({ json: indexMetadata });
     requests.push(route.request().url());
     if (hold) await held;
     await route.fulfill({ body: bytes, contentType: 'application/octet-stream', headers: timingHeaders });
@@ -165,7 +172,7 @@ test('empty and single-point charts, both metrics, click/keyboard dismissal and 
 
 test('retains ten calls and keeps an evicted selection stable with fallback focus', async ({ page }) => {
   await page.route('https://tiles.openfreemap.org/**', (route) => route.fulfill({ json: { version: 8, sources: {}, layers: [] } }));
-  await page.route('https://timings.example/**', (route) => route.fulfill({ body: bytes, headers: timingHeaders }));
+  await page.route('https://timings.example/**', (route) => route.request().url().endsWith('/fgb/style') ? route.fulfill({ status: 404 }) : route.fulfill(route.request().url().endsWith('/fgb/indexes') ? { json: indexMetadata } : { body: bytes, headers: timingHeaders }));
   await page.goto('./');
   await connect(page);
   await page.getByLabel('Select user', { exact: true }).selectOption('2');
@@ -206,6 +213,8 @@ for (const width of [1280, 375, 280]) {
     await page.route('https://tiles.openfreemap.org/**', (route) => route.fulfill({ json: { version: 8, sources: {}, layers: [] } }));
     const requests: string[] = [];
     await page.route('https://timings.example/**', (route) => {
+      if (route.request().url().endsWith('/fgb/style')) return route.fulfill({ status: 404 });
+      if (route.request().url().endsWith('/fgb/indexes')) return route.fulfill({ json: indexMetadata });
       requests.push(route.request().url());
       return route.fulfill({ body: route.request().url().includes('/filter?') ? Buffer.from(headerOnly(bytes)) : bytes, headers: timingHeaders });
     });
@@ -251,7 +260,7 @@ test('unavailable HTTP retains its position and details, breaks lines, and has a
       && new URL(name).searchParams.get('value') === 'B' ? [] : original(name, type);
   });
   await page.route('https://tiles.openfreemap.org/**', (route) => route.fulfill({ json: { version: 8, sources: {}, layers: [] } }));
-  await page.route('https://timings.example/**', (route) => route.fulfill({ body: Buffer.from(encoded([station('A'), station('B')])), headers: timingHeaders }));
+  await page.route('https://timings.example/**', (route) => route.request().url().endsWith('/fgb/style') ? route.fulfill({ status: 404 }) : route.fulfill(route.request().url().endsWith('/fgb/indexes') ? { json: indexMetadata } : { body: Buffer.from(encoded([station('A'), station('B')])), headers: timingHeaders }));
   await page.goto('./');
   await connect(page);
   await page.getByLabel('Select user', { exact: true }).selectOption('2');

@@ -14,6 +14,7 @@ export default defineConfig({
   },
   webServer: [
     { command: 'dotnet run --project ../Flatserve --no-build --launch-profile http --urls http://localhost:5221',
+      env: { Fgb__TextIndexes__0: 'brannvesen' },
       url: 'http://localhost:5221/fgb/feature/0', reuseExistingServer: !process.env.CI },
     { command: 'npm run preview -- --host 127.0.0.1 --port 4173 --strictPort --base /flatserve/',
       url: 'http://127.0.0.1:4173/flatserve/', reuseExistingServer: !process.env.CI },
