@@ -100,7 +100,10 @@ public record FgbDataset
         if (_spatialIndex.Length == 0)
             throw new InvalidOperationException("Spatial index is empty");
         
-        var started = Stopwatch.GetTimestamp();
+        var logInformation = _logger.IsEnabled(LogLevel.Information);
+        var recordMetrics = _metrics.Enabled;
+        var measure = recordMetrics || logInformation;
+        var started = measure ? Stopwatch.GetTimestamp() : 0;
         using var output = new MemoryStream();
         output.Write(_exportHeader);
         
@@ -113,9 +116,9 @@ public record FgbDataset
                 writable: false);
         }
         
-        var start = Stopwatch.GetTimestamp();
-        var events = new StringBuilder();
-        var featureMetrics = new List<object>();
+        var start = measure ? Stopwatch.GetTimestamp() : 0;
+        var events = logInformation ? new StringBuilder() : null;
+        var featureMetrics = recordMetrics ? new List<object>() : null;
         var written = 0;
         
         var intersects = PackedRTree.StreamSearch(
@@ -124,19 +127,20 @@ public record FgbDataset
             bbox,
             ReadNode);
         
-        var searchSetupUs = Stopwatch.GetElapsedTime(start).TotalMicroseconds;
-        events.Append(
-            $"\tWalked R-Tree in {Stopwatch.GetElapsedTime(start).TotalMicroseconds:F3} μs\n");
+        var searchSetupUs = measure ? Stopwatch.GetElapsedTime(start).TotalMicroseconds : 0;
+        if (logInformation)
+            events!.Append($"\tWalked R-Tree in {searchSetupUs:F3} μs\n");
 
         var sequenceFactory = new FlatGeobufCoordinateSequenceFactory();
         var factory = new GeometryFactory(sequenceFactory);
         
         foreach (var intersect in intersects)
         {
-            var startIntersect = Stopwatch.GetTimestamp();
-            events.Append($"\t\tProcessing feature {intersect.Index} at offset {intersect.Offset}\n");
+            var startIntersect = measure ? Stopwatch.GetTimestamp() : 0;
+            if (logInformation)
+                events!.Append($"\t\tProcessing feature {intersect.Index} at offset {intersect.Offset}\n");
             
-            var startDecode = Stopwatch.GetTimestamp();
+            var startDecode = recordMetrics ? Stopwatch.GetTimestamp() : 0;
             ulong payloadLength = BinaryPrimitives.ReadUInt32LittleEndian(
                 _data.AsSpan(
                     checked((int)intersect.Offset),
@@ -151,53 +155,64 @@ public record FgbDataset
                 new ByteBuffer(GetRawFeatureBytes(pointer)),
                 _header);
 
-            var decodeUs = Stopwatch.GetElapsedTime(startDecode).TotalMicroseconds;
-            var startAuthCheck = Stopwatch.GetTimestamp();
+            var decodeUs = recordMetrics ? Stopwatch.GetElapsedTime(startDecode).TotalMicroseconds : 0;
+            var startAuthCheck = measure ? Stopwatch.GetTimestamp() : 0;
             var accepted = feature.Geometry is not null && allowedArea.Intersects(feature.Geometry);
-            var authUs = Stopwatch.GetElapsedTime(startAuthCheck).TotalMicroseconds;
+            var authUs = measure ? Stopwatch.GetElapsedTime(startAuthCheck).TotalMicroseconds : 0;
             var writeUs = 0d;
 
             if (accepted)
             {
-                events.Append($"\t\t  Intersected with allowed area in {authUs:F3} μs\n");
-                var startWrite = Stopwatch.GetTimestamp();
+                if (logInformation)
+                    events!.Append($"\t\t  Intersected with allowed area in {authUs:F3} μs\n");
+                var startWrite = recordMetrics ? Stopwatch.GetTimestamp() : 0;
                 WriteFeature(output, pointer);
-                writeUs = Stopwatch.GetElapsedTime(startWrite).TotalMicroseconds;
+                writeUs = recordMetrics ? Stopwatch.GetElapsedTime(startWrite).TotalMicroseconds : 0;
                 written++;
-                events.Append(
-                    $"\t\t  Written to buffer in {Stopwatch.GetElapsedTime(startIntersect).TotalMicroseconds:F3} μs\n");
+                if (logInformation)
+                    events!.Append(
+                        $"\t\t  Written to buffer in {Stopwatch.GetElapsedTime(startIntersect).TotalMicroseconds:F3} μs\n");
             }
 
-            featureMetrics.Add(new
+            if (recordMetrics)
             {
-                FeatureIndex = intersect.Index,
-                Offset = intersect.Offset,
-                Accepted = accepted,
-                DecodeUs = decodeUs,
-                AuthorizationUs = authUs,
-                WriteUs = writeUs,
-                DurationUs = Stopwatch.GetElapsedTime(startIntersect).TotalMicroseconds
-            });
+                featureMetrics!.Add(new
+                {
+                    FeatureIndex = intersect.Index,
+                    Offset = intersect.Offset,
+                    Accepted = accepted,
+                    DecodeUs = decodeUs,
+                    AuthorizationUs = authUs,
+                    WriteUs = writeUs,
+                    DurationUs = Stopwatch.GetElapsedTime(startIntersect).TotalMicroseconds
+                });
+            }
         }
 
         var result = output.ToArray();
-        var elapsed = Stopwatch.GetElapsedTime(started);
-        _metrics.Write(new
+        var elapsed = measure ? Stopwatch.GetElapsedTime(started) : TimeSpan.Zero;
+        if (recordMetrics)
         {
-            Timestamp = DateTimeOffset.UtcNow,
-            Type = "get_bytes",
-            TraceId = Activity.Current?.TraceId.ToString(),
-            Dataset = _dataset,
-            DurationUs = elapsed.TotalMicroseconds,
-            SearchSetupUs = searchSetupUs,
-            CandidateCount = featureMetrics.Count,
-            WrittenCount = written,
-            Bytes = result.Length,
-            Features = featureMetrics
-        });
+            _metrics.Write(new
+            {
+                Timestamp = DateTimeOffset.UtcNow,
+                Type = "get_bytes",
+                TraceId = Activity.Current?.TraceId.ToString(),
+                Dataset = _dataset,
+                DurationUs = elapsed.TotalMicroseconds,
+                SearchSetupUs = searchSetupUs,
+                CandidateCount = featureMetrics!.Count,
+                WrittenCount = written,
+                Bytes = result.Length,
+                Features = featureMetrics
+            });
+        }
 
-        events.Append($"\tProcessed {written} features in {elapsed.TotalMilliseconds:F3} ms\n");
-        _logger.LogInformation("GetBytes:\n{Events}", events.ToString());
+        if (logInformation)
+        {
+            events!.Append($"\tProcessed {written} features in {elapsed.TotalMilliseconds:F3} ms\n");
+            _logger.LogInformation("GetBytes:\n{Events}", events.ToString());
+        }
         return result;
     }
     
