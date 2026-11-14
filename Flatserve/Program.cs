@@ -1,16 +1,19 @@
+using System.Diagnostics;
+using Flatserve;
 using Flatserve.Fgb;
 using Flatserve.User;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
+await using var metrics = new MetricsWriter(Path.Combine(builder.Environment.ContentRootPath, "metrics.jsonl"));
+builder.Services.AddSingleton(metrics);
 
 builder.Services.AddControllers();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
     policy.AllowAnyOrigin().WithMethods("GET").WithHeaders("Accept")));
-builder.Services.AddSingleton(new FgbDatasetRegistry(builder.Configuration, builder.Environment));
+builder.Services.AddSingleton<FgbDatasetRegistry>();
 
 builder.Services.AddSingleton<UserCollection>();
 
@@ -62,8 +65,74 @@ UserCollection.AddUser(new User
     ])
 });
 
-
 var app = builder.Build();
+
+using var gcPauses = new GcPauseListener(metrics, app.Logger);
+
+var gcLogGate = new object();
+var lastGcIndex = GC.GetGCMemoryInfo().Index;
+
+await using var gcTimer = new Timer(_ =>
+{
+    lock (gcLogGate)
+    {
+        var gc = GC.GetGCMemoryInfo();
+
+        if (gc.Index == lastGcIndex)
+            return;
+
+        lastGcIndex = gc.Index;
+
+        var observedAt = DateTimeOffset.UtcNow;
+        var totalPause = GC.GetTotalPauseDuration();
+        metrics.Write(new
+        {
+            Timestamp = observedAt,
+            Type = "gc_total",
+            Collection = gc.Index,
+            DurationUs = totalPause.TotalMicroseconds
+        });
+
+        app.Logger.LogInformation(
+            "\u001b[91mTotal GC pause time: {TotalMs:F3} ms\u001b[0m",
+            totalPause.TotalMilliseconds);
+    }
+}, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+
+app.Use(async (context, next) =>
+{
+    var started = Stopwatch.GetTimestamp();
+    var traceId = Activity.Current?.TraceId.ToString();
+
+    context.Response.OnCompleted(() =>
+    {
+        var elapsed = Stopwatch.GetElapsedTime(started);
+        metrics.Write(new
+        {
+            Timestamp = DateTimeOffset.UtcNow,
+            Type = "request",
+            TraceId = traceId,
+            RequestId = context.TraceIdentifier,
+            Method = context.Request.Method,
+            Path = context.Request.Path.Value,
+            Query = context.Request.QueryString.Value,
+            StatusCode = context.Response.StatusCode,
+            DurationUs = elapsed.TotalMicroseconds
+        });
+
+        app.Logger.LogInformation(
+            "Request {RequestId}: {Method} {Path} returned {StatusCode} in {ElapsedMs:F3} ms",
+            context.TraceIdentifier,
+            context.Request.Method,
+            context.Request.Path,
+            context.Response.StatusCode,
+            elapsed.TotalMilliseconds);
+
+        return Task.CompletedTask;
+    });
+
+    await next(context);
+});
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
