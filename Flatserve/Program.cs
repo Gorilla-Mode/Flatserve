@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Flatserve.Fgb;
 using Flatserve.User;
 
@@ -64,6 +65,29 @@ UserCollection.AddUser(new User
 
 
 var app = builder.Build();
+
+app.Use(async (context, next) =>
+{
+    var started = Stopwatch.GetTimestamp();
+
+    context.Response.OnCompleted(() =>
+    {
+        var elapsed = Stopwatch.GetElapsedTime(started);
+
+        app.Logger.LogInformation(
+            "Request {RequestId}: {Method} {Path} returned {StatusCode} in {ElapsedMs:F3} ms",
+            context.TraceIdentifier,
+            context.Request.Method,
+            context.Request.Path,
+            context.Response.StatusCode,
+            elapsed.TotalMilliseconds);
+
+        return Task.CompletedTask;
+    });
+
+    await next(context);
+});
+
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
