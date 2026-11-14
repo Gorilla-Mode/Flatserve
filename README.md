@@ -65,10 +65,6 @@ With the API already running, send requests for 60 seconds at a target of 10
 requests per second (600 planned requests):
 
 ```sh
-python3 scripts/generate_metrics.py --duration 60 --rps 10
-```
-
-```sh
 cd loadgen
 go run . --duration 10 --rps 1000 --max-rps 10000 --step-rps 1000
 ```
