@@ -7,7 +7,6 @@ using FlatGeobuf.NTS;
 using Flatserve.Index;
 using Google.FlatBuffers;
 using NetTopologySuite.Geometries;
-using NetTopologySuite.Operation.Valid;
 
 namespace Flatserve.Fgb;
 
@@ -95,7 +94,7 @@ public record FgbDataset
         headerBytes.CopyTo(_exportHeader, Constants.MagicBytes.Length);
     }
 
-    public Byte[] GetBytes(Envelope bbox, Polygon allowedArea)
+    public ArraySegment<byte> GetBytes(Envelope bbox, Polygon allowedArea)
     {
         if (_spatialIndex.Length == 0)
             throw new InvalidOperationException("Spatial index is empty");
@@ -179,7 +178,7 @@ public record FgbDataset
                 featureMetrics!.Add(new
                 {
                     FeatureIndex = intersect.Index,
-                    Offset = intersect.Offset,
+                    intersect.Offset,
                     Accepted = accepted,
                     DecodeUs = decodeUs,
                     AuthorizationUs = authUs,
@@ -189,7 +188,9 @@ public record FgbDataset
             }
         }
 
-        var result = output.ToArray();
+        if(!output.TryGetBuffer(out var result))
+            throw new InvalidOperationException("Failed to get buffer from MemoryStream");
+        
         var elapsed = measure ? Stopwatch.GetElapsedTime(started) : TimeSpan.Zero;
         if (recordMetrics)
         {
@@ -203,7 +204,7 @@ public record FgbDataset
                 SearchSetupUs = searchSetupUs,
                 CandidateCount = featureMetrics!.Count,
                 WrittenCount = written,
-                Bytes = result.Length,
+                Bytes = result.Count,
                 Features = featureMetrics
             });
         }
@@ -213,6 +214,7 @@ public record FgbDataset
             events!.Append($"\tProcessed {written} features in {elapsed.TotalMilliseconds:F3} ms\n");
             _logger.LogInformation("GetBytes:\n{Events}", events.ToString());
         }
+        
         return result;
     }
     

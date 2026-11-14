@@ -38,16 +38,29 @@ public class FlatGeobufController(
         return PhysicalFile(file[0], "application/json");
     }
 
-    private IActionResult Export(string? layerId, Func<FgbDataset, byte[]> query)
+    private IActionResult Export(
+        string? layerId,
+        Func<FgbDataset, ArraySegment<byte>> query)
     {
         if (layerId is not null)
-            return registry.Datasets.TryGetValue(layerId, out var dataset)
-                ? File(query(dataset), "application/vnd.fgb")
-                : NotFound($"Layer '{layerId}' not found.");
+        {
+            if (!registry.Datasets.TryGetValue(layerId, out var dataset))
+                return NotFound($"Layer '{layerId}' not found.");
+
+            var bytes = query(dataset);
+
+            // Wrap the existing array without copying it.
+            // ASP.NET disposes this stream after executing the response.
+            var stream = new MemoryStream(
+                bytes.Array!, bytes.Offset, bytes.Count, writable: false);
+
+            return File(stream, "application/vnd.fgb");
+        }
 
         // Prepare every result before writing HTTP headers or any multipart bytes.
         return new MultipartFgbResult(registry.Datasets
-            .Select(layer => (layer.Key, query(layer.Value))).ToArray());
+            .Select(layer => (layer.Key, query(layer.Value)))
+            .ToArray());
     }
 
     [HttpGet]
