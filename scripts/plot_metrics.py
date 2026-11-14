@@ -23,6 +23,17 @@ intervals in red. Restart the updated server to record these boundaries. Legacy
 sampled observations remain timestamp markers and are never assigned intervals.
 gc_total records are cumulative and are ignored. Lower-panel bar widths are only
 for visibility, not pause intervals; caps distinguish overlapping pause durations.
+
+The interactive window has a compact sidebar with shared time-range controls,
+separate duration-range controls, and Linear / Log (zero-safe) scale selectors. Log mode
+uses symlog: linear within 1 ms of zero and logarithmic beyond it. Slider values
+always use seconds or milliseconds. Reset view restores full ranges and linear
+scales. --output saves the initial chart before controls are added; --no-show
+exports without controls. The window toolbar can save the interactive figure.
+Zoom in, then left-click and drag inside either panel to pan within the original
+chart bounds. Time moves in both panels; vertical movement affects only the
+dragged panel. Sidebar ranges follow the view. Toolbar pan/zoom takes precedence
+when enabled.
 """
 
 import argparse
@@ -203,9 +214,7 @@ def plot_metrics(metrics: Metrics, source: Path):
 
     timing_ax.set_ylabel("Duration (ms)")
     gc_ax.set_ylabel("Pause (ms)")
-    gc_ax.set_xlabel(
-        f"Elapsed seconds since {origin.isoformat(timespec='milliseconds')}" if origin else "Elapsed seconds"
-    )
+    gc_ax.set_xlabel("Time elapsed (s)")
     for axis in (timing_ax, gc_ax):
         axis.set_ylim(bottom=0)
         axis.grid(True, alpha=0.25)
@@ -220,6 +229,167 @@ def plot_metrics(metrics: Metrics, source: Path):
                 ha="center", fontsize=9)
     figure.tight_layout(rect=(0, 0.07, 1, 0.87))
     return figure
+
+
+class ChartControls:
+    """Keep widgets alive and apply range/scale selections to the chart axes."""
+
+    def __init__(self, figure):
+        from matplotlib.widgets import Button, RadioButtons, RangeSlider
+
+        self.figure = figure
+        timing_ax, gc_ax = figure.axes
+        self.axes = {
+            "time": (timing_ax, "x", 0.001),
+            "timing": (timing_ax, "y", 1),
+            "gc": (gc_ax, "y", 1),
+        }
+        self.initial_limits = {
+            key: tuple(getattr(axis, f"get_{direction}lim")())
+            for key, (axis, direction, _) in self.axes.items()
+        }
+        self.sliders = {}
+        self.scales = {}
+
+        figure.set_size_inches(15, 8, forward=True)
+        figure.subplots_adjust(right=0.79)
+        # Keep titles and notes centered over the charts rather than the sidebar.
+        chart_center = (figure.subplotpars.left + figure.subplotpars.right) / 2
+        for text in figure.texts:
+            text.set_x(chart_center)
+        figure.texts[-1].set_fontsize(8)
+        figure.text(0.825, 0.9, "View controls", fontsize=10, weight="bold")
+        rows = (("time", "Time range (s)", 0.79),
+                ("timing", "Timing range (ms)", 0.56),
+                ("gc", "GC pause range (ms)", 0.33))
+        for key, label, y in rows:
+            bounds = self.initial_limits[key]
+            slider_ax = figure.add_axes((0.835, y, 0.135, 0.022))
+            slider_ax.set_title(label, loc="left", fontsize=9, pad=10)
+            slider = RangeSlider(slider_ax, "", *bounds, valinit=bounds,
+                                 valfmt="%.4g", handle_style={"size": 6})
+            slider.valtext.set_fontsize(8)
+            slider.valtext.set_position((0.5, -0.4))
+            slider.valtext.set_horizontalalignment("center")
+            slider.valtext.set_verticalalignment("top")
+            slider.on_changed(lambda values, key=key: self.set_range(key, values))
+            self.sliders[key] = slider
+
+            selector_ax = figure.add_axes((0.825, y - 0.115, 0.155, 0.075), frameon=False)
+            selector = RadioButtons(selector_ax,
+                                    ("Linear", "Log (zero-safe)"), active=0)
+            for text in selector.labels:
+                text.set_fontsize(8)
+            selector.on_clicked(lambda label, key=key: self.set_scale(key, label))
+            self.scales[key] = selector
+
+        self.reset_button = Button(figure.add_axes((0.835, 0.1, 0.135, 0.035)), "Reset view")
+        self.reset_button.label.set_fontsize(9)
+        self.reset_button.on_clicked(self.reset)
+        self._pan_state = None
+        self._connections = [
+            figure.canvas.mpl_connect(name, callback)
+            for name, callback in (
+                ("button_press_event", self.start_pan),
+                ("motion_notify_event", self.drag_pan),
+                ("button_release_event", self.end_pan),
+                ("figure_leave_event", self.end_pan),
+                ("close_event", self.close),
+            )
+        ]
+
+    def start_pan(self, event):
+        from matplotlib.backend_bases import MouseButton
+
+        timing_ax = self.axes["timing"][0]
+        gc_ax = self.axes["gc"][0]
+        canvas = self.figure.canvas
+        toolbar = canvas.toolbar
+        if (event.button != MouseButton.LEFT or event.inaxes not in (timing_ax, gc_ax)
+                or self._pan_state is not None or (toolbar and toolbar.mode)
+                or not canvas.widgetlock.available(self)):
+            return
+        axis = event.inaxes
+        keys = ("time", "timing" if axis is timing_ax else "gc")
+        spans = {}
+        for key in keys:
+            target, direction, _ = self.axes[key]
+            transform = getattr(target, f"{direction}axis").get_transform()
+            low, high = transform.transform(getattr(target, f"get_{direction}lim")())
+            spans[key] = high - low
+        canvas.widgetlock(self)
+        axis.start_pan(event.x, event.y, MouseButton.LEFT)
+        self._pan_state = (axis, keys, spans)
+
+    def drag_pan(self, event):
+        from matplotlib.backend_bases import MouseButton
+
+        if self._pan_state is None or event.x is None or event.y is None:
+            return
+        axis, keys, spans = self._pan_state
+        axis.drag_pan(MouseButton.LEFT, event.key, event.x, event.y)
+        for key in keys:
+            target, direction, _ = self.axes[key]
+            transform = getattr(target, f"{direction}axis").get_transform()
+            bounds = self.initial_limits[key]
+            bound_low, bound_high = transform.transform(bounds)
+            proposed_low = transform.transform(getattr(target, f"get_{direction}lim")())[0]
+            width = spans[key]
+            if width >= bound_high - bound_low or math.isclose(width, bound_high - bound_low,
+                                                              rel_tol=1e-12):
+                limits = bounds
+            else:
+                low = min(max(proposed_low, bound_low), bound_high - width)
+                limits = transform.inverted().transform((low, low + width))
+                limits = (max(bounds[0], limits[0]), min(bounds[1], limits[1]))
+            getattr(target, f"set_{direction}lim")(*limits)
+            # Reflect the pan without triggering slider callbacks that would reapply limits.
+            slider = self.sliders[key]
+            eventson = slider.eventson
+            slider.eventson = False
+            try:
+                slider.set_val(limits)
+            finally:
+                slider.eventson = eventson
+        self.figure.canvas.draw_idle()
+
+    def end_pan(self, event=None):
+        if self._pan_state is not None:
+            self._pan_state[0].end_pan()
+            self._pan_state = None
+            if self.figure.canvas.widgetlock.isowner(self):
+                self.figure.canvas.widgetlock.release(self)
+
+    def close(self, event=None):
+        self.end_pan()
+        for connection in self._connections:
+            self.figure.canvas.mpl_disconnect(connection)
+        self._connections.clear()
+
+    def set_range(self, key, values):
+        lower, upper = values
+        if lower >= upper:
+            return
+        axis, direction, _ = self.axes[key]
+        getattr(axis, f"set_{direction}lim")(lower, upper)
+        self.figure.canvas.draw_idle()
+
+    def set_scale(self, key, label):
+        axis, direction, threshold = self.axes[key]
+        limits = getattr(axis, f"get_{direction}lim")()
+        setter = getattr(axis, f"set_{direction}scale")
+        if label == "Linear":
+            setter("linear")
+        else:
+            setter("symlog", linthresh=threshold)
+        self.set_range(key, limits)
+
+    def reset(self, event=None):
+        self.end_pan()
+        for key in self.axes:
+            self.scales[key].set_active(0)
+            self.sliders[key].set_val(self.initial_limits[key])
+        self.figure.canvas.draw_idle()
 
 
 def main() -> int:
@@ -241,6 +411,8 @@ def main() -> int:
             figure.savefig(args.output, format="png", dpi=160)
             print(f"Saved {args.output}")
         if not args.no_show:
+            # Figure ownership retains widget/callback references until the window closes.
+            figure._metrics_controls = ChartControls(figure)
             plt.show()
         plt.close(figure)
     except ModuleNotFoundError as error:
