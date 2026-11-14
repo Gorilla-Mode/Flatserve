@@ -66,6 +66,38 @@ UserCollection.AddUser(new User
 
 var app = builder.Build();
 
+var gcLogGate = new object();
+var lastGcIndex = GC.GetGCMemoryInfo().Index;
+
+using var gcTimer = new Timer(_ =>
+{
+    lock (gcLogGate)
+    {
+        var gc = GC.GetGCMemoryInfo();
+
+        if (gc.Index == lastGcIndex)
+            return;
+
+        lastGcIndex = gc.Index;
+
+        foreach (var pause in gc.PauseDurations)
+        {
+            if (pause == TimeSpan.Zero)
+                continue;
+
+            app.Logger.LogInformation(
+                "\u001b[91mGC {Index}, generation {Generation}: pause {PauseUs:F3} µs\u001b[0m",
+                gc.Index,
+                gc.Generation,
+                pause.TotalMicroseconds);
+        }
+
+        app.Logger.LogInformation(
+            "\u001b[91mTotal GC pause time: {TotalMs:F3} ms\u001b[0m",
+            GC.GetTotalPauseDuration().TotalMilliseconds);
+    }
+}, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+
 app.Use(async (context, next) =>
 {
     var started = Stopwatch.GetTimestamp();
