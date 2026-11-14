@@ -11,7 +11,7 @@ builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
     policy.AllowAnyOrigin().WithMethods("GET").WithHeaders("Accept")));
-builder.Services.AddSingleton(new FgbDatasetRegistry(builder.Configuration, builder.Environment));
+builder.Services.AddSingleton<FgbDatasetRegistry>();
 
 builder.Services.AddSingleton<UserCollection>();
 

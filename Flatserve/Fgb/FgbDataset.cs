@@ -1,10 +1,13 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
+using System.Text;
 using FlatGeobuf;
 using FlatGeobuf.Index;
 using FlatGeobuf.NTS;
 using Flatserve.Index;
 using Google.FlatBuffers;
 using NetTopologySuite.Geometries;
+using NetTopologySuite.Operation.Valid;
 
 namespace Flatserve.Fgb;
 
@@ -18,8 +21,9 @@ public record FgbDataset
     private readonly Dictionary<string, HashIndex> _textIndexes = new Dictionary<string, HashIndex>();
     private byte[] _exportHeader = [];
     public IReadOnlyList<TextIndexMetadata> TextIndexesMeta;
+    private readonly ILogger<FgbDataset> _logger;
 
-    public FgbDataset(string filePath, IEnumerable<string>? textIndexes = null)
+    public FgbDataset(string filePath, ILogger<FgbDataset> logger, IEnumerable<string>? textIndexes = null)
     {
         var raw = File.ReadAllBytes(filePath);
 
@@ -66,6 +70,7 @@ public record FgbDataset
         }
         
         TextIndexesMeta = metadata.AsReadOnly();
+        _logger = logger;
     }
 
     private void CreateExportHeader(Header originalHeader)
@@ -103,17 +108,26 @@ public record FgbDataset
                 writable: false);
         }
         
+        var start = Stopwatch.GetTimestamp();
+        var events = new StringBuilder();
+        
         var intersects = PackedRTree.StreamSearch(
             _header.FeaturesCount,
             _header.IndexNodeSize,
             bbox,
             ReadNode);
         
+        events.Append(
+            $"\tWalked R-Tree in {Stopwatch.GetElapsedTime(start).TotalMicroseconds:F3} μs\n");
+
         var sequenceFactory = new FlatGeobufCoordinateSequenceFactory();
         var factory = new GeometryFactory(sequenceFactory);
         
         foreach (var intersect in intersects)
         {
+            var startIntersect = Stopwatch.GetTimestamp();
+            events.Append($"\t\tProcessing feature {intersect.Index} at offset {intersect.Offset}\n");
+            
             ulong payloadLength = BinaryPrimitives.ReadUInt32LittleEndian(
                 _data.AsSpan(
                     checked((int)intersect.Offset),
@@ -128,14 +142,27 @@ public record FgbDataset
                 new ByteBuffer(GetRawFeatureBytes(pointer)),
                 _header);
 
+            var startAuthCheck = Stopwatch.GetTimestamp();
+            
             if (feature.Geometry is null || !allowedArea.Intersects(feature.Geometry))
             {
                  continue;  
             }
             
+            events.Append(
+                $"\t\t  Intersected with allowed area in {Stopwatch.GetElapsedTime(startAuthCheck).TotalMicroseconds:F3} μs\n");
+            
             WriteFeature(output, pointer); 
+            
+            events.Append(
+                $"\t\t  Written to buffer in {Stopwatch.GetElapsedTime(startIntersect).TotalMicroseconds:F3} μs\n");
         }
-                
+        
+        events.Append(
+            $"\tProcessed {FeaturePtrs.Count} features in {Stopwatch.GetElapsedTime(start).TotalMilliseconds:F3} ms\n");
+        
+        _logger.LogInformation("GetBytes:\n{Events}", events.ToString());
+
         return output.ToArray();
     }
     

@@ -5,7 +5,7 @@ public sealed class FgbDatasetRegistry
     private readonly Dictionary<string, FgbDataset> _datasets = new(StringComparer.OrdinalIgnoreCase);
     public IReadOnlyDictionary<string, FgbDataset> Datasets => _datasets;
 
-    public FgbDatasetRegistry(IConfiguration configuration, IWebHostEnvironment environment)
+    public FgbDatasetRegistry(IConfiguration configuration, IWebHostEnvironment environment, ILoggerFactory loggerFactory)
     {
         string Resolve(string path) => Path.GetFullPath(path, environment.ContentRootPath);
 
@@ -29,7 +29,7 @@ public sealed class FgbDatasetRegistry
                 throw new InvalidOperationException($"Invalid or duplicate FGB layer ID: '{id}'.");
             try
             {
-                _datasets.Add(id, new FgbDataset(path, attributes));
+                _datasets.Add(id, new FgbDataset(path, loggerFactory.CreateLogger<FgbDataset>(), attributes));
             }
             catch (Exception exception)
             {
