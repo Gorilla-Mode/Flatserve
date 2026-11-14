@@ -7,9 +7,6 @@ export interface ViewQuery {
   type: 'bounds'; connection: number; version: number; sequence: number;
   bounds: Bounds[]; bbox: boolean; text: boolean;
 }
-export interface DataMessage {
-  type: 'data'; connection: number; version: number; features: SpatialFeature[];
-}
 export interface ViewResult {
   connection: number; version: number; sequence: number;
   counts: Record<string, number>; membership: Record<string, number[]> | null;
@@ -41,9 +38,13 @@ function envelope(geometry: Geometry | null): Bounds | undefined {
 
 /** Constructed only in the worker: camera messages never traverse coordinates on the UI thread. */
 export class SpatialIndex {
-  private readonly entries;
-  constructor(features: SpatialFeature[]) {
-    this.entries = features.map((feature) => ({ ...feature, envelope: envelope(feature.geometry) }));
+  private readonly entries: (SpatialFeature & { envelope: Bounds | undefined })[];
+  constructor(features: SpatialFeature[], previous?: SpatialIndex) {
+    const retained = new Map(previous?.entries.map((entry) => [entry.id, entry]));
+    this.entries = features.map((feature) => {
+      const old = retained.get(feature.id);
+      return old?.geometry === feature.geometry ? old : { ...feature, envelope: envelope(feature.geometry) };
+    }).sort((a, b) => a.id - b.id);
   }
   query(query: ViewQuery): ViewResult {
     const counts: Record<string, number> = Object.create(null);

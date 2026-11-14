@@ -158,16 +158,26 @@ export function App() {
       const renderer = renderStyledLayers(instance, layers.map((layer) => layer.id), prepared);
       styleRenderer.current = renderer;
       renderer.update(viewRef.current.batch, viewRef.current.membership, hiddenRef.current);
+      statistics.current?.setRenderer(renderer);
       setStyledDatasets(renderer.styled);
       setStyleWarnings(renderer.warnings);
       return () => {
+        statistics.current?.setRenderer(undefined);
         styleRenderer.current = null;
         if (map.current === instance) renderer.cleanup();
       };
     } catch (error) {
       setStyleWarnings([errorMessage(error)]);
     }
-  }, [mapReady, connection, stylesheet, layers]);
+  }, [mapReady, connection, stylesheet]);
+
+  useEffect(() => {
+    const renderer = styleRenderer.current;
+    if (!renderer) return;
+    renderer.ensureDatasets(layers.map((layer) => layer.id));
+    setStyledDatasets(new Set(renderer.styled));
+    setStyleWarnings([...renderer.warnings]);
+  }, [layers, stylesheet, mapReady]);
 
   useEffect(() => {
     if (authorizedAreaCache.current?.connection !== connection || authorizedAreaCache.current?.userId !== selectedUser) {
@@ -224,8 +234,9 @@ export function App() {
     const viewport = new ViewportStatistics(connection.id, (state) => {
       viewRef.current = state;
       setView(state);
-    });
+    }, undefined, (error) => setStatus({ loading: false, error: errorMessage(error) }));
     statistics.current = viewport;
+    viewport.setRenderer(styleRenderer.current ?? undefined);
     setLayers([]);
     setHiddenLayers(new Set());
     let fitted = false;
@@ -355,7 +366,10 @@ export function App() {
             <li>
               <label htmlFor="user">Select user</label>
               <select id="user" value={selectedUser ?? ''} onChange={(event) => {
-                setSelectedUser(Number(event.target.value));
+                const userId = Number(event.target.value);
+                statistics.current?.invalidate();
+                void session.current?.setUser(userId);
+                setSelectedUser(userId);
               }}>
                 <option value="" disabled>Select user…</option>
                 <option value="0">Agder</option>
@@ -469,6 +483,7 @@ export function App() {
           setAuthorizedArea(null);
           setSelectedValue(null);
           setFilterEnabled(false);
+          statistics.current?.invalidate();
           session.current?.dispose();
           recordTiming(null);
           setConnection((previous) => ({ url, id: (previous?.id ?? 0) + 1 }));

@@ -1,5 +1,6 @@
 import type { Feature } from 'geojson';
 import { featureLayer } from './api';
+import type { SnapshotDelta } from './snapshot';
 
 const colors = ['#bb342a', '#38bdf8', '#fbbf24', '#a78bfa', '#34d399', '#fb923c'];
 export function layerColor(id: string): string {
@@ -11,6 +12,7 @@ export function layerColor(id: string): string {
 
 export interface DataBatch {
   version: number;
+  delta?: SnapshotDelta;
   groups: Map<string, Feature[]>;
 }
 
