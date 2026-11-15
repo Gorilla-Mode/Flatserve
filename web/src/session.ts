@@ -1,6 +1,6 @@
 import { collectionUrl, errorMessage, fetchBinary, filterUrl } from './api';
 import type { FgbLayer, HeaderMeta, RequestTiming } from './api';
-import { containsBounds, expandBounds, WORLD } from './bounds';
+import { containsBounds, containsPrefetchBounds, directionalBuffers, WORLD } from './bounds';
 import type { Bounds } from './bounds';
 import type { DatasetDecoder } from './snapshotWorker';
 
@@ -14,6 +14,7 @@ interface Observer {
   onValues?: (values: string[]) => void;
   onDiscovery: (status: { loading: boolean; error: string | null }) => void;
   onCoverage?: (bounds: Bounds[] | undefined) => void;
+  onPrefetchCoverage?: (bounds: Bounds[] | undefined) => void;
   onTiming?: (timing: RequestTiming) => void;
   onLayers?: (layers: FgbLayer[]) => void;
 }
@@ -30,6 +31,8 @@ export class DatasetSession {
   private bufferEnabled = true;
   private bounds: Bounds[] = [];
   private coverage?: Bounds[];
+  private prefetchCoverage?: Bounds[];
+  private queryAnchor?: Bounds[];
   private failedTarget?: string;
   private pending?: Promise<void>;
   private status?: { loading: boolean; error: string | null };
@@ -108,7 +111,10 @@ export class DatasetSession {
   refresh(): Promise<void> {
     this.cancelView();
     this.coverage = undefined;
+    this.prefetchCoverage = undefined;
+    this.queryAnchor = undefined;
     this.observer.onCoverage?.(undefined);
+    this.observer.onPrefetchCoverage?.(undefined);
     this.failedTarget = undefined;
     if (this.disposed) return Promise.resolve();
     return this.schedule();
@@ -130,11 +136,17 @@ export class DatasetSession {
     // Movement only updates the desired bounds while one logical request is active.
     if (this.viewRequest) return this.pending!;
     const selection = this.selection;
-    if (selection === null && this.coverage && containsBounds(this.coverage, this.bounds)) {
+    const covered = this.bufferEnabled
+      ? this.prefetchCoverage && containsPrefetchBounds(this.prefetchCoverage, this.bounds)
+      : this.coverage && containsBounds(this.coverage, this.bounds);
+    if (selection === null && covered) {
       this.notifyStatus({ loading: false, error: null });
       return Promise.resolve();
     }
-    const requestBounds = this.bufferEnabled ? expandBounds(this.bounds) : this.bounds;
+    const queryBounds = this.bounds;
+    const buffers = this.bufferEnabled ? directionalBuffers(queryBounds, this.queryAnchor) : undefined;
+    const requestBounds = buffers?.fetched ?? queryBounds;
+    const prefetchBounds = buffers?.prefetch;
     const target = selection !== null ? JSON.stringify([this.attribute, selection]) : JSON.stringify(requestBounds);
     if ((selection === null && !requestBounds.length) || target === this.failedTarget) return Promise.resolve();
     const urls = selection !== null ? [filterUrl(this.base, selection, this.attribute)]
@@ -142,11 +154,12 @@ export class DatasetSession {
     const generation = this.generation;
     const request = new AbortController();
     this.viewRequest = request;
-    this.pending = this.load(urls, requestBounds, target, selection, generation, request);
+    this.pending = this.load(urls, queryBounds, requestBounds, prefetchBounds, target, selection, generation, request);
     return this.pending;
   }
 
-  private async load(urls: URL[], requestBounds: Bounds[], target: string, selection: string | null,
+  private async load(urls: URL[], queryBounds: Bounds[], requestBounds: Bounds[], prefetchBounds: Bounds[] | undefined,
+    target: string, selection: string | null,
     generation: number, request: AbortController): Promise<void> {
     const current = () => !this.disposed && generation === this.generation && !request.signal.aborted;
     this.notifyStatus({ loading: true, error: null });
@@ -165,7 +178,10 @@ export class DatasetSession {
       for (const timing of dataset.timings) this.observer.onTiming?.(timing);
       if (selection === null) {
         this.coverage = requestBounds;
+        this.prefetchCoverage = prefetchBounds;
+        this.queryAnchor = queryBounds;
         this.observer.onCoverage?.(requestBounds);
+        this.observer.onPrefetchCoverage?.(prefetchBounds);
       }
       this.failedTarget = undefined;
       this.observer.onDataset(dataset.handle);
@@ -187,7 +203,10 @@ export class DatasetSession {
     this.disposed = true;
     this.cancelView();
     this.coverage = undefined;
+    this.prefetchCoverage = undefined;
+    this.queryAnchor = undefined;
     this.observer.onCoverage?.(undefined);
+    this.observer.onPrefetchCoverage?.(undefined);
     this.discoveryRequest?.abort();
   }
 }

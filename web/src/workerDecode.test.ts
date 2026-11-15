@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { Feature } from 'geojson';
 import { fetchBinary } from './api';
 import type { BinaryResponse } from './api';
-import { viewportBounds, WORLD } from './bounds';
+import { directionalBuffers, viewportBounds, WORLD } from './bounds';
 import { DatasetSession } from './session';
 import { SnapshotWorker } from './snapshotWorker';
 import type { WorkerRequest, WorkerResponse } from './snapshotWorker';
@@ -159,6 +159,72 @@ it('shares the worker between discovery and view decoding, emits timing before p
   expect(h.messages).toContainEqual({ type: 'release', connection: 1, handle: discoveryMessage.request });
   h.viewport.setRenderer(h.renderer);
   await vi.waitFor(() => expect(h.publish.mock.lastCall?.[0].counts).toEqual({ dataset: 3 }));
+  session.dispose(); h.viewport.dispose();
+});
+
+it('retains both boundaries throughout slow decoding and fetches the latest viewport on completion', async () => {
+  const h = harness();
+  const onCoverage = vi.fn(), onPrefetchCoverage = vi.fn();
+  const read = vi.fn(async () => binary());
+  const session = new DatasetSession('https://example.org', {
+    onDataset: (handle) => h.viewport.setData(handle), onInvalidate: () => h.viewport.invalidate(),
+    onStatus: vi.fn(), onHeader: vi.fn(), onDiscovery: vi.fn(), onCoverage, onPrefetchCoverage,
+  }, h.viewport, read);
+  const area = (west = 0) => viewportBounds(west, 50, west + 10, 60);
+  await session.setBounds(area());
+  await session.setUser(2);
+  onCoverage.mockClear(); onPrefetchCoverage.mockClear();
+  let resume!: () => void;
+  const held = new Promise<void>((resolve) => { resume = resolve; });
+  const originalDecode = h.viewport.decode.bind(h.viewport);
+  let decoding = false;
+  vi.spyOn(h.viewport, 'decode').mockImplementationOnce(async (...args) => {
+    const decoded = await originalDecode(...args);
+    decoding = true;
+    await held;
+    return decoded;
+  });
+  const pending = session.setBounds(area(2));
+  await vi.waitFor(() => expect(decoding).toBe(true));
+  session.setBounds(area(3));
+  session.setBounds(area(5));
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(onCoverage).not.toHaveBeenCalled();
+  expect(onPrefetchCoverage).not.toHaveBeenCalled();
+  resume();
+  await pending;
+  expect(read).toHaveBeenCalledTimes(3);
+  expect(onCoverage.mock.calls).toEqual([[viewportBounds(0, 47, 16, 63)], [viewportBounds(3, 47, 19, 63)]]);
+  expect(onPrefetchCoverage.mock.calls).toEqual([[viewportBounds(1, 48, 15, 62)], [viewportBounds(4, 48, 18, 62)]]);
+  session.dispose(); h.viewport.dispose();
+});
+
+it('retains both boundaries and data if a split response fails to decode, then replaces them together on success', async () => {
+  const h = harness();
+  const onCoverage = vi.fn(), onPrefetchCoverage = vi.fn(), onDataset = vi.fn((handle: number) => h.viewport.setData(handle));
+  const read = vi.fn(async () => binary(read.mock.calls.length === 3 ? new TextEncoder().encode('broken') : encoded()));
+  const session = new DatasetSession('https://example.org', {
+    onDataset, onInvalidate: () => h.viewport.invalidate(), onStatus: vi.fn(), onHeader: vi.fn(),
+    onDiscovery: vi.fn(), onCoverage, onPrefetchCoverage,
+  }, h.viewport, read);
+  const initial = viewportBounds(0, 50, 10, 60);
+  const crossing = viewportBounds(170, 50, 190, 60);
+  await session.setBounds(initial);
+  await session.setUser(2);
+  onCoverage.mockClear(); onPrefetchCoverage.mockClear();
+  await session.setBounds(crossing);
+  expect(read).toHaveBeenCalledTimes(3);
+  expect(onCoverage).not.toHaveBeenCalled();
+  expect(onPrefetchCoverage).not.toHaveBeenCalled();
+  expect(onDataset).toHaveBeenCalledOnce();
+  await session.setBounds(crossing);
+  expect(read).toHaveBeenCalledTimes(3);
+  const latest = viewportBounds(171, 60, 191, 70);
+  await session.setBounds(latest);
+  expect(read).toHaveBeenCalledTimes(5);
+  expect(onDataset).toHaveBeenCalledTimes(2);
+  expect(onCoverage.mock.calls).toEqual([[directionalBuffers(latest, initial).fetched]]);
+  expect(onPrefetchCoverage.mock.calls).toEqual([[directionalBuffers(latest, initial).prefetch]]);
   session.dispose(); h.viewport.dispose();
 });
 

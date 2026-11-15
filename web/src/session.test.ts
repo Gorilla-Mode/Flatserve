@@ -9,7 +9,7 @@ import type { TimingRecord } from './timings';
 
 const observers = () => ({
   onFeatures: vi.fn(), onStatus: vi.fn(), onHeader: vi.fn(), onValues: vi.fn(), onDiscovery: vi.fn(),
-  onCoverage: vi.fn(),
+  onCoverage: vi.fn(), onPrefetchCoverage: vi.fn(),
 });
 
 // Existing spatial/filter cases start with an explicitly selected demo user.
@@ -17,6 +17,7 @@ function norwaySession(...args: ConstructorParameters<typeof DatasetSession>) {
   const session = new DatasetSession(...args);
   void session.setUser(2);
   vi.mocked(args[1].onCoverage)?.mockClear();
+  vi.mocked(args[1].onPrefetchCoverage)?.mockClear();
   vi.mocked(args[1].onStatus).mockClear();
   return session;
 }
@@ -71,7 +72,7 @@ describe('buffered dataset publishing', () => {
     const session = norwaySession('https://example.org', observer, read);
     await session.setBounds(area());
     expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([...features, ...invisible]);
-    await session.setBounds(area(2, 12));
+    await session.setBounds(area(1.4, 11.4));
     expect(read).toHaveBeenCalledTimes(1);
     expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([...features, ...invisible]);
     expect(observer.onFeatures).toHaveBeenCalledTimes(1);
@@ -143,6 +144,123 @@ describe('session timings', () => {
 });
 
 describe('coverage notifications', () => {
+  it('fetches on prefetch contact and catches up inside fetched coverage, anchoring both boundaries to each original request', async () => {
+    const observer = observers();
+    const { read, calls } = pendingReader();
+    const session = norwaySession('https://example.org', observer, read);
+    const initial = session.setBounds(area());
+    calls[0].resolve([]);
+    await initial;
+    await session.setBounds(area(1.9, 11.9));
+    expect(calls).toHaveLength(1);
+    const next = session.setBounds(area(2, 12));
+    expect(calls).toHaveLength(2);
+    session.setBounds(area(3, 13));
+    session.setBounds(area(5, 15));
+    expect(calls).toHaveLength(2);
+    expect(calls[1].options.signal.aborted).toBe(false);
+    expect(observer.onCoverage.mock.calls).toEqual([[expandBounds(area())]]);
+    expect(observer.onPrefetchCoverage.mock.calls).toEqual([[expandBounds(area(), 0.2)]]);
+    calls[1].resolve([]);
+    await vi.waitFor(() => expect(calls).toHaveLength(3));
+    expect(observer.onCoverage.mock.lastCall).toEqual([viewportBounds(0, 47, 16, 63)]);
+    expect(observer.onPrefetchCoverage.mock.lastCall).toEqual([viewportBounds(1, 48, 15, 62)]);
+    expect(calls[2].url.searchParams.get('minX')).toBe('3');
+    session.setBounds(area(5.5, 15.5));
+    calls[2].resolve([]);
+    await next;
+    expect(calls).toHaveLength(3);
+    expect(observer.onCoverage.mock.lastCall).toEqual([viewportBounds(3, 47, 19, 63)]);
+    expect(observer.onPrefetchCoverage.mock.lastCall).toEqual([viewportBounds(4, 48, 18, 62)]);
+    session.dispose();
+  });
+
+  it('keeps the successful query anchor through covered movement and a failed request', async () => {
+    const observer = observers();
+    const read = vi.fn().mockResolvedValueOnce([]).mockRejectedValueOnce(new Error('Offline')).mockResolvedValue([]);
+    const session = norwaySession('https://example.org', observer, read);
+    await session.setBounds(viewportBounds(0, 0, 10, 10));
+    await session.setBounds(viewportBounds(1, 0, 11, 10)); // Reuse must not move the anchor.
+    await session.setBounds(viewportBounds(20, 0, 30, 10)); // Failure must not move it either.
+    await session.setBounds(viewportBounds(0, 20, 10, 30));
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(observer.onCoverage.mock.lastCall).toEqual([viewportBounds(-3, 18, 13, 34)]);
+    expect(observer.onPrefetchCoverage.mock.lastCall).toEqual([viewportBounds(-2, 19, 12, 33)]);
+    session.dispose();
+  });
+
+  it('reverses from the successful original query rather than the shifted buffer center', async () => {
+    const observer = observers();
+    const session = norwaySession('https://example.org', observer, vi.fn().mockResolvedValue([]));
+    await session.setBounds(area());
+    await session.setBounds(area(2, 12));
+    await session.setBounds(area(1, 11)); // Touch the trailing 10% prefetch margin.
+    expect(observer.onCoverage.mock.lastCall).toEqual([viewportBounds(-3, 47, 13, 63)]);
+    expect(observer.onPrefetchCoverage.mock.lastCall).toEqual([viewportBounds(-2, 48, 12, 62)]);
+    session.dispose();
+  });
+
+  it('centers a stationary zoom request after directional movement', async () => {
+    const observer = observers();
+    const session = norwaySession('https://example.org', observer, vi.fn().mockResolvedValue([]));
+    await session.setBounds(area());
+    await session.setBounds(area(2, 12));
+    await session.setBounds(area(-3, 17));
+    expect(observer.onCoverage.mock.lastCall).toEqual([viewportBounds(-9, 47, 23, 63)]);
+    expect(observer.onPrefetchCoverage.mock.lastCall).toEqual([viewportBounds(-7, 48, 21, 62)]);
+    session.dispose();
+  });
+
+  it.each(['refresh', 'user', 'configuration', 'buffer', 'filter', 'reconnect'])(
+    'clears a directional anchor on %s', async (reset) => {
+      const observer = observers();
+      const read = vi.fn().mockResolvedValue([]);
+      let session = norwaySession('https://example.org', observer, read);
+      await session.setBounds(area());
+      await session.setBounds(area(2, 12));
+      if (reset === 'refresh') await session.refresh();
+      if (reset === 'user') await session.setUser(1);
+      if (reset === 'configuration') await session.setFilter('', area(20, 30));
+      if (reset === 'buffer') {
+        await session.setFilter('', area(20, 30), false);
+        await session.setFilter('', area(20, 30), true);
+      }
+      if (reset === 'filter') {
+        await session.setFilter('Oslo');
+        await session.setFilter('', area(20, 30));
+      }
+      if (reset === 'reconnect') {
+        session.dispose();
+        session = norwaySession('https://example.org', observer, read);
+        await session.setBounds(area(20, 30));
+      }
+      const query = reset === 'refresh' || reset === 'user' ? area(2, 12) : area(20, 30);
+      expect(observer.onCoverage.mock.lastCall).toEqual([expandBounds(query)]);
+      expect(observer.onPrefetchCoverage.mock.lastCall).toEqual([expandBounds(query, .2)]);
+      session.dispose();
+    },
+  );
+
+  it.each([
+    [WORLD], viewportBounds(-150, -90, 150, 90), viewportBounds(0, 80, 10, 90),
+    viewportBounds(0, -90, 10, -80), viewportBounds(180, 55, 180, 55),
+    viewportBounds(180, 50, 180, 60), viewportBounds(0, 55, 10, 55),
+    viewportBounds(0, 50, 1e-8, 50 + 1e-8),
+  ])('does not loop on stationary world, clamped, degenerate or tiny bounds %j', async (...bounds) => {
+    const observer = observers();
+    const read = vi.fn(async () => {
+      if (read.mock.calls.length > 4) throw new Error('Repeated stationary request');
+      return [];
+    });
+    const session = norwaySession('https://example.org', observer, read);
+    await session.setBounds(bounds);
+    await session.setBounds(bounds);
+    expect(read).toHaveBeenCalledTimes(expandBounds(bounds).length);
+    expect(observer.onCoverage).toHaveBeenCalledOnce();
+    expect(observer.onPrefetchCoverage).toHaveBeenCalledOnce();
+    session.dispose();
+  });
+
   it('reports empty spatial success, reuses it silently, and keeps it during movement and failures', async () => {
     const observer = observers();
     const { read, calls } = pendingReader();
@@ -162,7 +280,10 @@ describe('coverage notifications', () => {
     const replacement = session.setBounds(area(4, 14));
     calls[2].resolve([]);
     await replacement;
-    expect(observer.onCoverage.mock.calls).toEqual([[expandBounds(area())], [expandBounds(area(4, 14))]]);
+    expect(observer.onCoverage.mock.calls).toEqual([[expandBounds(area())], [viewportBounds(2, 47, 18, 63)]]);
+    expect(observer.onPrefetchCoverage.mock.calls).toEqual([
+      [expandBounds(area(), 0.2)], [viewportBounds(3, 48, 17, 62)],
+    ]);
   });
 
   it('clears coverage on refresh, query configuration changes, filters, and disposal', async () => {
@@ -171,6 +292,7 @@ describe('coverage notifications', () => {
     const session = norwaySession('https://example.org', observer, read);
     await session.setBounds(area());
     observer.onCoverage.mockClear();
+    observer.onPrefetchCoverage.mockClear();
     await session.refresh();
     await session.setFilter('', area(4, 6));
     await session.setFilter('', area(4, 6), false);
@@ -184,6 +306,12 @@ describe('coverage notifications', () => {
       [undefined], [area(4, 6)],
       [undefined], [undefined],
       [undefined], [area(4, 6)], [undefined],
+    ]);
+    expect(observer.onPrefetchCoverage.mock.calls).toEqual([
+      [undefined], [expandBounds(area(), 0.2)],
+      [undefined], [expandBounds(area(4, 6), 0.2)],
+      [undefined], [undefined], [undefined], [undefined],
+      [undefined], [undefined], [undefined],
     ]);
   });
 
@@ -202,6 +330,7 @@ describe('coverage notifications', () => {
     calls[2].reject(new Error('Second half failed'));
     await failed;
     expect(observer.onCoverage).toHaveBeenCalledTimes(1);
+    expect(observer.onPrefetchCoverage.mock.calls).toEqual([[expandBounds(area(), 0.2)]]);
     const retry = session.refresh();
     expect(observer.onCoverage.mock.lastCall).toEqual([undefined]);
     calls[3].resolve([]);
@@ -210,6 +339,9 @@ describe('coverage notifications', () => {
     calls[4].resolve([]);
     await retry;
     expect(observer.onCoverage.mock.lastCall).toEqual([expandBounds(crossing)]);
+    expect(observer.onPrefetchCoverage.mock.calls).toEqual([
+      [expandBounds(area(), 0.2)], [undefined], [expandBounds(crossing, 0.2)],
+    ]);
   });
 
   it('ignores aborted and stale responses, including after disposal', async () => {
@@ -219,19 +351,24 @@ describe('coverage notifications', () => {
     const stale = session.setBounds(area());
     const latest = session.setFilter('', area(20, 30));
     observer.onCoverage.mockClear();
+    observer.onPrefetchCoverage.mockClear();
     calls[0].resolve([]);
     await stale;
     expect(observer.onCoverage).not.toHaveBeenCalled();
+    expect(observer.onPrefetchCoverage).not.toHaveBeenCalled();
     expect(calls[0].options.signal.aborted).toBe(true);
     calls[1].resolve([]);
     await latest;
     expect(observer.onCoverage.mock.calls).toEqual([[expandBounds(area(20, 30))]]);
+    expect(observer.onPrefetchCoverage.mock.calls).toEqual([[expandBounds(area(20, 30), 0.2)]]);
     const disposed = session.setBounds(area(40, 50));
     session.dispose();
     observer.onCoverage.mockClear();
+    observer.onPrefetchCoverage.mockClear();
     calls[2].resolve([]);
     await disposed;
     expect(observer.onCoverage).not.toHaveBeenCalled();
+    expect(observer.onPrefetchCoverage).not.toHaveBeenCalled();
   });
 });
 
@@ -267,7 +404,7 @@ describe('buffered live updates', () => {
     await session.setFilter('', area());
     expect(read.mock.lastCall?.[0].searchParams.get('minX')).toBe('0');
     await session.setFilter('', area(), true);
-    expect(read.mock.lastCall?.[0].searchParams.get('minX')).toBe('-2.5');
+    expect(read.mock.lastCall?.[0].searchParams.get('minX')).toBe('-3');
   });
 
   it.each([false, true])('cancels pending work when Buffer becomes %s and rejects stale success and errors', async (enabled) => {
@@ -317,14 +454,14 @@ describe('buffered live updates', () => {
     await session.setBounds(area());
     const stringify = vi.spyOn(JSON, 'stringify');
     expect(Object.fromEntries(read.mock.calls[0][0].searchParams)).toEqual({
-      userId: '2', minX: '-2.5', minY: '47.5', maxX: '12.5', maxY: '62.5',
+      userId: '2', minX: '-3', minY: '47', maxX: '13', maxY: '63',
     });
     expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('inside', 8), station('buffer', 12), station('outside', 20)]);
     await session.setBounds(area(1, 11));
     expect(observer.onFeatures).toHaveBeenCalledTimes(1);
-    await session.setBounds(area(2.5, 12.5));
+    await session.setBounds(area(1.4, 11.4));
     expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('inside', 8), station('buffer', 12), station('outside', 20)]);
-    await session.setBounds(area(2.5, 12.5));
+    await session.setBounds(area(1.4, 11.4));
     expect(observer.onFeatures).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledTimes(1);
     expect(stringify).not.toHaveBeenCalled();
@@ -348,10 +485,10 @@ describe('buffered live updates', () => {
     expect(observer.onFeatures).not.toHaveBeenCalled();
     calls[0].resolve([station('old', 8)]);
     await vi.waitFor(() => expect(calls).toHaveLength(2));
-    expect(calls[1].url.searchParams.get('minX')).toBe('17.5');
+    expect(calls[1].url.searchParams.get('minX')).toBe('18');
     expect(observer.onFeatures).toHaveBeenCalledExactlyOnceWith([station('old', 8)]);
-    // A newer camera position inside the pending buffer needs no third request.
-    session.setBounds(area(22, 32));
+    // A newer camera position strictly inside the pending prefetch boundary needs no third request.
+    session.setBounds(area(21, 31));
     calls[1].resolve([station('hidden', 21), station('visible', 28)]);
     await Promise.all([first, moving]);
     expect(calls).toHaveLength(2);
@@ -441,7 +578,7 @@ describe('buffered live updates', () => {
     calls[3].resolve([station('west', -175)]);
     await retry;
     expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('east', 175), station('west', -175)]);
-    await session.setBounds(expandBounds(bounds));
+    await session.setBounds(bounds);
     expect(calls).toHaveLength(4);
   });
 
@@ -459,7 +596,7 @@ describe('buffered live updates', () => {
     expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('Oslo', 8)]);
     await session.setFilter('');
     expect(read).toHaveBeenCalledTimes(4);
-    expect(read.mock.lastCall?.[0].searchParams.get('minX')).toBe('6.5');
+    expect(Number(read.mock.lastCall?.[0].searchParams.get('minX'))).toBeCloseTo(6.4);
   });
 });
 function pendingReader() {
@@ -543,8 +680,9 @@ describe('user selection', () => {
       const index = calls.length;
       const changed = session.setUser(userId);
       expect(calls[index].url.searchParams.get('userId')).toBe(String(userId));
-      expect(calls[index].url.searchParams.get('minX')).toBe(userId === 0 ? (buffer ? '-2.5' : '0') : (buffer ? '-1' : '1'));
+      expect(Number(calls[index].url.searchParams.get('minX'))).toBeCloseTo(userId === 0 ? (buffer ? -3 : 0) : (buffer ? -1.4 : 1));
       expect(observer.onCoverage.mock.lastCall).toEqual([undefined]);
+      expect(observer.onPrefetchCoverage.mock.lastCall).toEqual([undefined]);
       if (userId !== 0) expect(observer.onFeatures.mock.lastCall).toEqual([[]]);
       calls[index].resolve([station(String(userId))]);
       await changed;
@@ -558,6 +696,8 @@ describe('user selection', () => {
     }
     await session.setUser(null);
     expect(observer.onFeatures.mock.lastCall).toEqual([[]]);
+    expect(observer.onCoverage.mock.lastCall).toEqual([undefined]);
+    expect(observer.onPrefetchCoverage.mock.lastCall).toEqual([undefined]);
     expect(observer.onStatus.mock.lastCall).toEqual([{ loading: false, error: null }]);
     await session.refresh();
     expect(calls).toHaveLength(6);
@@ -738,7 +878,9 @@ describe('connection sessions', () => {
     const bbox = { minX: 7, minY: 58, maxX: 9, maxY: 60 };
     await session.setFilter('', [bbox]);
     expect(read).toHaveBeenCalledTimes(before + 1);
-    expect(Object.fromEntries(read.mock.lastCall![0].searchParams)).toEqual({ userId: '2', minX: '6.5', minY: '57.5', maxX: '9.5', maxY: '60.5' });
+    const expected = expandBounds([bbox])[0];
+    expect(Object.fromEntries(read.mock.lastCall![0].searchParams)).toEqual({ userId: '2',
+      ...Object.fromEntries(Object.entries(expected).map(([key, value]) => [key, String(value)])) });
     expect(observer.onStatus.mock.lastCall?.[0].loading).toBe(false);
   });
   it('atomically combines both halves of an antimeridian viewport', async () => {
@@ -751,7 +893,7 @@ describe('connection sessions', () => {
     const session = norwaySession('https://example.org', observer, read);
     await session.setBounds([{ ...WORLD, minX: 170 }, { ...WORLD, maxX: -170 }]);
     expect(read).toHaveBeenCalledTimes(2);
-    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('165', 175), station('-180', -175)]);
+    expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('164', 175), station('-180', -175)]);
   });
   it('aborts discovery and feature requests on a connection change, without publishing late results', async () => {
     const observer = observers();

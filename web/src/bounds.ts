@@ -34,13 +34,43 @@ export function coverageOutline(bounds: Bounds[]): Feature<MultiLineString> | un
   return { type: 'Feature', properties: {}, geometry: { type: 'MultiLineString', coordinates } };
 }
 
-/** Add 25% of the active width/height on each side, then normalize/split. */
-export function expandBounds(bounds: Bounds[]): Bounds[] {
+/** Add a fraction of the original width/height on each side, then normalize/split. */
+export function expandBounds(bounds: Bounds[], margin = 0.3): Bounds[] {
   const area = continuousBounds(bounds);
   if (!area) return [];
-  const x = (area.maxX - area.minX) * 0.25;
-  const y = (area.maxY - area.minY) * 0.25;
-  return viewportBounds(area.minX - x, area.minY - y, area.maxX + x, area.maxY + y);
+  return expandArea(area, margin);
+}
+
+function expandArea(area: Bounds, margin: number, offsetX = 0, offsetY = 0): Bounds[] {
+  const x = (area.maxX - area.minX) * margin;
+  const y = (area.maxY - area.minY) * margin;
+  return viewportBounds(area.minX - x + offsetX, area.minY - y + offsetY,
+    area.maxX + x + offsetX, area.maxY + y + offsetY);
+}
+
+/** Shift both buffers toward movement from the last successful original query.
+ * Work in continuous coordinates so splitting and polar clipping happen last. */
+export function directionalBuffers(bounds: Bounds[], anchor?: Bounds[]): { fetched: Bounds[]; prefetch: Bounds[] } {
+  const area = continuousBounds(bounds);
+  if (!area) return { fetched: [], prefetch: [] };
+  const previous = anchor && continuousBounds(anchor);
+  const width = area.maxX - area.minX;
+  const height = area.maxY - area.minY;
+  let dx = 0, dy = 0;
+  if (previous) {
+    if (width > 0 && width < 360 && previous.maxX - previous.minX < 360) {
+      const longitude = (area.minX + area.maxX - previous.minX - previous.maxX) / 2;
+      dx = (((longitude + 180) % 360 + 360) % 360 - 180) / width;
+    }
+    if (height > 0) dy = (area.minY + area.maxY - previous.minY - previous.maxY) / 2 / height;
+  }
+  const length = Math.hypot(dx, dy);
+  const offsetX = length ? width * 0.1 * dx / length : 0;
+  const offsetY = length ? height * 0.1 * dy / length : 0;
+  return {
+    fetched: expandArea(area, 0.3, offsetX, offsetY),
+    prefetch: expandArea(area, 0.2, offsetX, offsetY),
+  };
 }
 
 /** Inclusive containment of geographic rectangles, including repeated worlds. */
@@ -52,6 +82,26 @@ export function containsBounds(buffer: Bounds[], bounds: Bounds[]): boolean {
   if (width >= 360) return true;
   const offset = ((inner.minX - outer.minX) % 360 + 360) % 360;
   return offset + inner.maxX - inner.minX <= width + 1e-9;
+}
+
+/** Reuse only strictly inside reachable prefetch edges. World and collapsed edges
+ * remain inclusive so stationary full-world/degenerate views never request forever. */
+export function containsPrefetchBounds(boundary: Bounds[], bounds: Bounds[]): boolean {
+  if (!containsBounds(boundary, bounds)) return false;
+  const outer = continuousBounds(boundary)!;
+  const inner = continuousBounds(bounds)!;
+  const epsilon = 1e-9;
+  const height = outer.maxY - outer.minY;
+  if (height > epsilon) {
+    const tolerance = Math.min(epsilon, height * 0.01);
+    if (outer.minY > -90 && inner.minY <= outer.minY + tolerance) return false;
+    if (outer.maxY < 90 && inner.maxY >= outer.maxY - tolerance) return false;
+  }
+  const width = outer.maxX - outer.minX;
+  if (width >= 360 || width <= epsilon) return true;
+  const offset = ((inner.minX - outer.minX) % 360 + 360) % 360;
+  const tolerance = Math.min(epsilon, width * 0.01);
+  return offset > tolerance && offset + inner.maxX - inner.minX < width - tolerance;
 }
 
 export function containsPoint(bounds: Bounds[], coordinates: number[]): boolean {

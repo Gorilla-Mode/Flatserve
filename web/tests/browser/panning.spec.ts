@@ -38,7 +38,7 @@ for (const bbox of [false, true]) test(`profiles polygon-heavy ${bbox ? 'BBox' :
     };
     const post = Worker.prototype.postMessage;
     Worker.prototype.postMessage = function (message, ...args) {
-      if (message?.type === 'LD' && !['query-bbox', 'fetched-buffer', 'authorized-area'].includes(message.data?.source)) metrics.datasetUploads++;
+      if (message?.type === 'LD' && !['query-bbox', 'fetched-buffer', 'prefetch-buffer', 'authorized-area'].includes(message.data?.source)) metrics.datasetUploads++;
       if (message?.type === 'bounds') {
         metrics.boundsMessages++;
         window.panningState.query = message;
@@ -82,8 +82,10 @@ for (const bbox of [false, true]) test(`profiles polygon-heavy ${bbox ? 'BBox' :
   const initial = await page.getByRole('status').innerText();
   await moveOnMap(page, .7, .55);
   await page.mouse.down();
+  // Keep inside the 20% margin even when the geographic inset shrinks to fit
+  // projected corners and the camera continues moving briefly after release.
   for (let step = 1; step <= 20; step++) {
-    await moveOnMap(page, .7 - step * .005, .55, 2);
+    await moveOnMap(page, .7 - step * .002, .55, 2);
     await page.waitForTimeout(60);
   }
   if (bbox) await expect(page.getByRole('status')).not.toHaveText(initial);

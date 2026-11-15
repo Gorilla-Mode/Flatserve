@@ -12,6 +12,7 @@ export class DatasetSession extends Session {
     onDiscovery: (status: { loading: boolean; error: string | null }) => void;
     onValues?: (values: string[]) => void;
     onCoverage?: ConstructorParameters<typeof Session>[1]['onCoverage'];
+    onPrefetchCoverage?: ConstructorParameters<typeof Session>[1]['onPrefetchCoverage'];
     onLayers?: (layers: FgbLayer[]) => void;
     onTiming?: DecodeOptions['onTiming'];
   }, read: (url: URL, options: DecodeOptions) => Promise<Feature[]>) {
