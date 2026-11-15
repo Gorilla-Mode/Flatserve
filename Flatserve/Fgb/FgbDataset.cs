@@ -99,10 +99,13 @@ public record FgbDataset
         if (_spatialIndex.Length == 0)
             throw new InvalidOperationException("Spatial index is empty");
         
+        #region Metrics
         var logInformation = _logger.IsEnabled(LogLevel.Information);
         var recordMetrics = _metrics.Enabled;
         var measure = recordMetrics || logInformation;
         var started = measure ? Stopwatch.GetTimestamp() : 0;
+        #endregion
+        
         using var output = new MemoryStream();
         output.Write(_exportHeader);
         
@@ -115,10 +118,12 @@ public record FgbDataset
                 writable: false);
         }
         
+        #region Metrics
         var start = measure ? Stopwatch.GetTimestamp() : 0;
         var events = logInformation ? new StringBuilder() : null;
         var featureMetrics = recordMetrics ? new List<object>() : null;
         var written = 0;
+        #endregion
         
         var intersects = PackedRTree.StreamSearch(
             _header.FeaturesCount,
@@ -135,11 +140,13 @@ public record FgbDataset
         
         foreach (var intersect in intersects)
         {
+            #region Metrics
             var startIntersect = measure ? Stopwatch.GetTimestamp() : 0;
             if (logInformation)
                 events!.Append($"\t\tProcessing feature {intersect.Index} at offset {intersect.Offset}\n");
-            
             var startDecode = recordMetrics ? Stopwatch.GetTimestamp() : 0;
+            #endregion
+            
             ulong payloadLength = BinaryPrimitives.ReadUInt32LittleEndian(
                 _data.AsSpan(
                     checked((int)intersect.Offset),
@@ -168,27 +175,38 @@ public record FgbDataset
                     // Preserve the existing decoder's handling of invalid geometry.
                 }
             }
-
+            #region Metrics
             var decodeUs = recordMetrics ? Stopwatch.GetElapsedTime(startDecode).TotalMicroseconds : 0;
             var startAuthCheck = measure ? Stopwatch.GetTimestamp() : 0;
+            #endregion 
+            
             var accepted = geometry is not null &&
                            allowedArea.Intersects(geometry);
+            #region Metrics
             var authUs = measure ? Stopwatch.GetElapsedTime(startAuthCheck).TotalMicroseconds : 0;
             var writeUs = 0d;
+            #endregion
 
             if (accepted)
             {
+                #region Metrics
                 if (logInformation)
                     events!.Append($"\t\t  Intersected with allowed area in {authUs:F3} μs\n");
                 var startWrite = recordMetrics ? Stopwatch.GetTimestamp() : 0;
+                #endregion
+                
                 WriteFeature(output, pointer);
+                
+                #region Metrics
                 writeUs = recordMetrics ? Stopwatch.GetElapsedTime(startWrite).TotalMicroseconds : 0;
                 written++;
                 if (logInformation)
                     events!.Append(
                         $"\t\t  Written to buffer in {Stopwatch.GetElapsedTime(startIntersect).TotalMicroseconds:F3} μs\n");
+                #endregion
             }
 
+            #region Metrics
             if (recordMetrics)
             {
                 featureMetrics!.Add(new
@@ -202,11 +220,13 @@ public record FgbDataset
                     DurationUs = Stopwatch.GetElapsedTime(startIntersect).TotalMicroseconds
                 });
             }
+            #endregion
         }
 
         if(!output.TryGetBuffer(out var result))
             throw new InvalidOperationException("Failed to get buffer from MemoryStream");
         
+        #region Metrics
         var elapsed = measure ? Stopwatch.GetElapsedTime(started) : TimeSpan.Zero;
         if (recordMetrics)
         {
@@ -230,6 +250,7 @@ public record FgbDataset
             events!.Append($"\tProcessed {written} features in {elapsed.TotalMilliseconds:F3} ms\n");
             _logger.LogInformation("GetBytes:\n{Events}", events.ToString());
         }
+        #endregion
         
         return result;
     }
