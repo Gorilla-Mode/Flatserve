@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { fetchIndexes, filterUrl } from './api';
-import { DatasetSession } from './session';
+import { DatasetSession } from '../tests/sessionHarness';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 

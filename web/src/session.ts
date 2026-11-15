@@ -1,11 +1,13 @@
-import type { Feature } from 'geojson';
-import { collectionUrl, errorMessage, fetchFeatures, filterUrl } from './api';
+import { collectionUrl, errorMessage, fetchBinary, filterUrl } from './api';
 import type { FgbLayer, HeaderMeta, RequestTiming } from './api';
 import { containsBounds, expandBounds, WORLD } from './bounds';
 import type { Bounds } from './bounds';
+import type { DatasetDecoder } from './snapshotWorker';
 
 interface Observer {
-  onFeatures: (features: Feature[]) => void;
+  /** Ownership of this worker handle passes to the viewport. */
+  onDataset: (handle: number) => void;
+  onInvalidate: () => void;
   onStatus: (status: { loading: boolean; error: string | null }) => void;
   onHeader: (header: HeaderMeta) => void;
   /** Legacy value discovery for callers using the sample dataset. The web uses index metadata. */
@@ -14,12 +16,6 @@ interface Observer {
   onCoverage?: (bounds: Bounds[] | undefined) => void;
   onTiming?: (timing: RequestTiming) => void;
   onLayers?: (layers: FgbLayer[]) => void;
-}
-
-export function distinctBrannvesen(features: Feature[]): string[] {
-  return [...new Set(features.map((f) => f.properties?.brannvesen)
-    .filter((v): v is string => typeof v === 'string' && v.trim().length > 0))]
-    .sort((a, b) => a.localeCompare(b, 'nb'));
 }
 
 /** One connection's coverage and request lifetimes; no stale request may publish data. */
@@ -34,7 +30,6 @@ export class DatasetSession {
   private bufferEnabled = true;
   private bounds: Bounds[] = [];
   private coverage?: Bounds[];
-  private features: Feature[] = [];
   private failedTarget?: string;
   private pending?: Promise<void>;
   private status?: { loading: boolean; error: string | null };
@@ -42,7 +37,8 @@ export class DatasetSession {
   constructor(
     private readonly base: string,
     private readonly observer: Observer,
-    private readonly read = fetchFeatures,
+    private readonly decoder: DatasetDecoder,
+    private readonly read = fetchBinary,
   ) {}
 
   async discover(): Promise<void> {
@@ -53,24 +49,24 @@ export class DatasetSession {
     const current = () => !this.disposed && !request.signal.aborted;
     this.observer.onDiscovery({ loading: true, error: null });
     try {
-      const layers: FgbLayer[] = [];
-      const headers: HeaderMeta[] = [];
-      const features = await this.read(collectionUrl(this.base, WORLD, 2), {
-        signal: request.signal,
-        onHeader: (header) => { headers.push(header); },
-        onLayer: (layer) => { layers.push(layer); },
-        onTiming: (timing) => { if (current()) this.observer.onTiming?.(timing); },
-      });
+      const response = await this.read(collectionUrl(this.base, WORLD, 2), { signal: request.signal });
       if (!current()) return;
-      this.observer.onLayers?.(layers);
-      const extents = headers.map((header) => header.envelope)
-        .filter((extent) => extent?.length === 4 && Array.from(extent).every(Number.isFinite));
-      if (headers.length) this.observer.onHeader({ ...headers[0], envelope: extents.length ? new Float64Array([
-        Math.min(...extents.map((extent) => extent![0])), Math.min(...extents.map((extent) => extent![1])),
-        Math.max(...extents.map((extent) => extent![2])), Math.max(...extents.map((extent) => extent![3])),
-      ]) : null });
-      this.observer.onValues?.(distinctBrannvesen(features));
-      this.observer.onDiscovery({ loading: false, error: null });
+      const dataset = await this.decoder.decode([response], request.signal, true);
+      try {
+        if (!current()) return;
+        for (const timing of dataset.timings) this.observer.onTiming?.(timing);
+        const layers = dataset.layers;
+        const headers = layers.map((layer) => layer.header);
+        this.observer.onLayers?.(layers);
+        const extents = headers.map((header) => header.envelope)
+          .filter((extent) => extent?.length === 4 && Array.from(extent).every(Number.isFinite));
+        if (headers.length) this.observer.onHeader({ ...headers[0], envelope: extents.length ? new Float64Array([
+          Math.min(...extents.map((extent) => extent![0])), Math.min(...extents.map((extent) => extent![1])),
+          Math.max(...extents.map((extent) => extent![2])), Math.max(...extents.map((extent) => extent![3])),
+        ]) : null });
+        this.observer.onValues?.(dataset.values ?? []);
+        this.observer.onDiscovery({ loading: false, error: null });
+      } finally { this.decoder.release(dataset.handle); }
     } catch (error) {
       if (current()) this.observer.onDiscovery({ loading: false, error: errorMessage(error) });
     }
@@ -98,10 +94,7 @@ export class DatasetSession {
   setUser(userId: number | null): Promise<void> {
     if (this.disposed || this.userId === userId) return Promise.resolve();
     this.userId = userId;
-    if (this.features.length) {
-      this.features = [];
-      this.observer.onFeatures([]);
-    }
+    this.observer.onInvalidate();
     return this.refresh();
   }
 
@@ -157,24 +150,25 @@ export class DatasetSession {
     generation: number, request: AbortController): Promise<void> {
     const current = () => !this.disposed && generation === this.generation && !request.signal.aborted;
     this.notifyStatus({ loading: true, error: null });
-    const features: Feature[] = [];
+    const responses = [];
     try {
       for (const url of urls) {
-        const part = await this.read(url, {
+        const response = await this.read(url, {
           signal: request.signal,
           cache: selection !== null ? 'no-store' : undefined,
-          onTiming: (timing) => { if (current()) this.observer.onTiming?.(timing); },
         });
         if (!current()) return;
-        features.push(...part);
+        responses.push(response);
       }
+      const dataset = await this.decoder.decode(responses, request.signal);
+      if (!current()) { this.decoder.release(dataset.handle); return; }
+      for (const timing of dataset.timings) this.observer.onTiming?.(timing);
       if (selection === null) {
         this.coverage = requestBounds;
         this.observer.onCoverage?.(requestBounds);
       }
-      this.features = features;
       this.failedTarget = undefined;
-      this.observer.onFeatures(features);
+      this.observer.onDataset(dataset.handle);
       this.notifyStatus({ loading: false, error: null });
     } catch (error) {
       if (!current()) return;

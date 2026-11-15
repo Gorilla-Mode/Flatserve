@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Feature } from 'geojson';
 import type { DecodeOptions, HeaderMeta, RequestTiming } from './api';
-import { DatasetSession, distinctBrannvesen } from './session';
+import { DatasetSession } from '../tests/sessionHarness';
 import { expandBounds, viewportBounds, WORLD } from './bounds';
 import { station } from '../tests/fixtures';
 import { timingHistory } from './timings';
@@ -663,8 +663,6 @@ describe('connection sessions', () => {
   });
 
   it('discovers sorted distinct nonempty values in a separate full-world request', async () => {
-    expect(distinctBrannvesen([station('Z'), station('A'), station('A'), station(' '),
-      { ...station(''), properties: null }])).toEqual(['A', 'Z']);
     const observer = observers();
     const { read, calls } = pendingReader();
     const session = norwaySession('https://example.org/base/', observer, read);

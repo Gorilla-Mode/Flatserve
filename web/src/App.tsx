@@ -241,9 +241,8 @@ export function App() {
     setHiddenLayers(new Set());
     let fitted = false;
     const current = new DatasetSession(connection.url, {
-      onFeatures: (features) => {
-        viewport.setData(features);
-      },
+      onDataset: (handle) => viewport.setData(handle),
+      onInvalidate: () => viewport.invalidate(),
       onStatus: setStatus,
       onDiscovery: setDiscovery,
       onLayers: setLayers,
@@ -257,7 +256,7 @@ export function App() {
           padding: 45, duration: 0, maxZoom: 12,
         });
       },
-    });
+    }, viewport);
     session.current = current;
     void current.discover();
     return () => {
@@ -367,7 +366,6 @@ export function App() {
               <label htmlFor="user">Select user</label>
               <select id="user" value={selectedUser ?? ''} onChange={(event) => {
                 const userId = Number(event.target.value);
-                statistics.current?.invalidate();
                 void session.current?.setUser(userId);
                 setSelectedUser(userId);
               }}>
