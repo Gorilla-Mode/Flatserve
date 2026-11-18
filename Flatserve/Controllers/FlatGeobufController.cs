@@ -14,30 +14,6 @@ public class FlatGeobufController(
     IWebHostEnvironment environment
     ) : ControllerBase
 {
-    [HttpGet("indexes")]
-    public IActionResult Indexes() => Ok(new
-    {
-        layers = registry.Datasets.Select(layer => new { id = layer.Key, indexes = layer.Value.TextIndexesMeta })
-    });
-
-    [HttpGet("style")]
-    public IActionResult Style()
-    {
-        var dir = Path.GetFullPath(
-            configuration["fgb:Directory"] ?? throw new InvalidOperationException("fgb:Directory is not configured.") ,
-            environment.ContentRootPath);
-
-        var file = Directory.GetFiles(dir, "*.json");
-        
-        if (file.Length == 0)
-            return NotFound("No style file found in the FGB directory.");
-        
-        if (file.Length > 1)
-            return BadRequest("Multiple style files found in the FGB directory. Only one is allowed.");
-        
-        return PhysicalFile(file[0], "application/json");
-    }
-    
     private IActionResult Export(string? layerId, Action<FgbDataset, Stream> write)
     {
         if (layerId is not null && !registry.Datasets.ContainsKey(layerId))
@@ -49,7 +25,9 @@ public class FlatGeobufController(
         if (bodyControl is not null)
             bodyControl.AllowSynchronousIO = true;
 
-        var body = Response.Body;
+        var body = new BufferedStream(
+            Response.BodyWriter.AsStream(leaveOpen: true),
+            bufferSize: 32 * 1024);
 
         if (layerId is not null)
         {
@@ -85,7 +63,31 @@ public class FlatGeobufController(
         WriteAscii($"--{boundary}--\r\n");
         return new EmptyResult();
     }
+    
+    [HttpGet("indexes")]
+    public IActionResult Indexes() => Ok(new
+    {
+        layers = registry.Datasets.Select(layer => new { id = layer.Key, indexes = layer.Value.TextIndexesMeta })
+    });
 
+    [HttpGet("style")]
+    public IActionResult Style()
+    {
+        var dir = Path.GetFullPath(
+            configuration["fgb:Directory"] ?? throw new InvalidOperationException("fgb:Directory is not configured.") ,
+            environment.ContentRootPath);
+
+        var file = Directory.GetFiles(dir, "*.json");
+        
+        if (file.Length == 0)
+            return NotFound("No style file found in the FGB directory.");
+        
+        if (file.Length > 1)
+            return BadRequest("Multiple style files found in the FGB directory. Only one is allowed.");
+        
+        return PhysicalFile(file[0], "application/json");
+    }
+    
     [HttpGet]
     [Route("collection")]
     [Route("{layerId}/collection")]
