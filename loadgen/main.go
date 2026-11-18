@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"math/rand"
+	"math/bits"
 	"net"
 	"net/http"
 	"net/url"
@@ -33,7 +33,7 @@ func parseConfig(args []string, out io.Writer) (config, error) {
 	f := flag.NewFlagSet("loadgen", flag.ContinueOnError)
 	f.SetOutput(out)
 	base := f.String("base-url", "http://localhost:5220", "API base URL")
-	duration := f.Float64("duration", 0, "seconds per stage (required)")
+	duration := f.Float64("duration", 0, "seconds per stage (required, at least one Vestland route loop)")
 	rps := f.Int("rps", 0, "starting requests per second (required)")
 	maximum := f.Int("max-rps", 0, "final ramp rate (requires --step-rps)")
 	step := f.Int("step-rps", 0, "ramp rate increment (requires --max-rps)")
@@ -57,16 +57,25 @@ func parseConfig(args []string, out io.Writer) (config, error) {
 	if err != nil {
 		return config{}, err
 	}
-	c := config{strings.TrimRight(*base, "/"), time.Duration(*duration * 1e9), time.Duration(*timeout * 1e9), rates, *concurrency, *yes}
+	c := config{strings.TrimRight(*base, "/"), time.Duration(math.Round(*duration * 1e9)), time.Duration(*timeout * 1e9), rates, *concurrency, *yes}
+	minimum := minimumStageDuration(rates[0])
+	if c.duration < minimum {
+		return config{}, fmt.Errorf("--duration must be at least %.9f seconds at %d RPS to schedule a complete %d-request Vestland route", minimum.Seconds(), rates[0], routeSlots)
+	}
 	var total int64
 	for _, rate := range rates {
-		n := math.Floor(c.duration.Seconds() * float64(rate))
-		if n < 1 || n >= float64(math.MaxInt64-total) {
-			return config{}, errors.New("planned request count must be at least one per stage and fit in int64")
+		n := requestSlots(c.duration, rate, false)
+		if n >= math.MaxInt64-total {
+			return config{}, errors.New("planned request count must fit in int64")
 		}
-		total += int64(n)
+		total += n
 	}
 	return c, nil
+}
+
+func minimumStageDuration(rate int) time.Duration {
+	// Round up to the first whole nanosecond that can fit a complete loop.
+	return 1 + (routeSlots*time.Second-1)/time.Duration(rate)
 }
 
 func stageRates(start, maximum, step int) ([]int, error) {
@@ -88,16 +97,92 @@ func stageRates(start, maximum, step int) ([]int, error) {
 	return rates, nil
 }
 
-var anchors = [][2]float64{{7.99, 58.15}, {5.73, 58.97}, {10.75, 59.91}, {5.32, 60.39}, {10.47, 61.12}, {7.16, 62.74}, {10.40, 63.43}, {12.15, 65.84}, {14.40, 67.28}, {18.96, 69.65}, {23.27, 69.97}, {30.05, 69.73}}
+const (
+	stepsPerLeg = 100
+	routeSlots  = 3*stepsPerLeg + 1
+)
 
-func bbox(rng *rand.Rand) [4]float64 {
-	a := anchors[rng.Intn(len(anchors))]
-	h := 75.0 / 111.32
-	lat := math.Max(57.5+h, math.Min(71.5-h, a[1]+(rng.Float64()*100-50)/111.32))
-	km := 111.32 * math.Cos(lat*math.Pi/180)
-	w := 75 / km
-	lon := math.Max(4+w, math.Min(32-w, a[0]+(rng.Float64()*100-50)/km))
-	return [4]float64{math.Max(4, lon-w), math.Max(57.5, lat-h), math.Min(32, lon+w), math.Min(71.5, lat+h)}
+type bbox struct {
+	minLon, minLat, maxLon, maxLat float64
+}
+
+type view struct {
+	lon, lat, halfWidth, halfHeight float64
+}
+
+func (v view) bounds() bbox {
+	return bbox{
+		v.lon - v.halfWidth, v.lat - v.halfHeight,
+		v.lon + v.halfWidth, v.lat + v.halfHeight,
+	}
+}
+
+func (v view) interpolate(next view, progress float64) view {
+	return view{
+		lon:        v.lon + (next.lon-v.lon)*progress,
+		lat:        v.lat + (next.lat-v.lat)*progress,
+		halfWidth:  v.halfWidth * math.Pow(next.halfWidth/v.halfWidth, progress),
+		halfHeight: v.halfHeight * math.Pow(next.halfHeight/v.halfHeight, progress),
+	}
+}
+
+var vestlandRoute = buildVestlandRoute()
+
+func routeBounds(slot int64) bbox {
+	return vestlandRoute[slot%routeSlots]
+}
+
+func buildVestlandRoute() [routeSlots]bbox {
+	const (
+		bergenLon       = 5.324
+		bergenLat       = 60.393
+		breivikenLat    = 60.420
+		floroLon        = 5.0328
+		floroLat        = 61.5996
+		blockHalfHeight = 0.1 / 111.32 // 100 meters in degrees of latitude.
+	)
+	latitudeScale := math.Cos(bergenLat * math.Pi / 180)
+	breivikenHalfHeight := breivikenLat - bergenLat
+	breivikenHalfWidth := breivikenHalfHeight / latitudeScale
+
+	// Vestland (county 46) WGS84 extent from Kartverket, rounded outward.
+	// https://ws.geonorge.no/kommuneinfo/v1/fylker/46/omrade
+	county := bbox{4.087524, 59.475420, 8.322053, 62.382397}
+	roundUp := func(degrees float64) float64 { return math.Ceil(degrees*100) / 100 }
+	fullHalfWidth := roundUp(max(bergenLon-county.minLon, county.maxLon-bergenLon))
+	fullHalfHeight := roundUp(max(bergenLat-county.minLat, county.maxLat-bergenLat))
+	waypoints := [...]view{
+		{bergenLon, bergenLat, blockHalfHeight / latitudeScale, blockHalfHeight},
+		{bergenLon, bergenLat, breivikenHalfWidth, breivikenHalfHeight},
+		{floroLon, floroLat - breivikenHalfHeight, breivikenHalfWidth, breivikenHalfHeight},
+		{bergenLon, bergenLat, fullHalfWidth, fullHalfHeight},
+	}
+	var route [routeSlots]bbox
+	for leg, start := range waypoints[:len(waypoints)-1] {
+		for step := 0; step < stepsPerLeg; step++ {
+			progress := float64(step) / stepsPerLeg
+			route[leg*stepsPerLeg+step] = start.interpolate(waypoints[leg+1], progress).bounds()
+		}
+	}
+	route[routeSlots-1] = waypoints[len(waypoints)-1].bounds()
+	return route
+}
+
+// Compute duration * rate / 1s with integer arithmetic so a complete loop
+// at the minimum duration never loses a slot to floating point rounding.
+func requestSlots(duration time.Duration, rate int, roundUp bool) int64 {
+	hi, lo := bits.Mul64(uint64(duration), uint64(rate))
+	if hi >= uint64(time.Second) {
+		return math.MaxInt64
+	}
+	slots, remainder := bits.Div64(hi, lo, uint64(time.Second))
+	if slots >= math.MaxInt64 {
+		return math.MaxInt64
+	}
+	if roundUp && remainder != 0 {
+		slots++
+	}
+	return int64(slots)
 }
 
 // Bounded ~1% logarithmic buckets in microseconds; zero/sub-microsecond samples use bucket 0.
@@ -161,13 +246,13 @@ func newClient(c config) *http.Client {
 	return &http.Client{Transport: t, Timeout: c.timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
-func request(ctx context.Context, client *http.Client, base string, rng *rand.Rand, s *counters) {
+func request(ctx context.Context, client *http.Client, base string, bounds bbox, s *counters) {
 	s.Lock()
 	s.started++
 	s.Unlock()
 	start := time.Now()
-	b := bbox(rng)
-	address := fmt.Sprintf("%s/fgb/collection?userId=2&minX=%.8f&minY=%.8f&maxX=%.8f&maxY=%.8f", base, b[0], b[1], b[2], b[3])
+	address := fmt.Sprintf("%s/fgb/collection?userId=2&minX=%.8f&minY=%.8f&maxX=%.8f&maxY=%.8f",
+		base, bounds.minLon, bounds.minLat, bounds.maxLon, bounds.maxLat)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	status := 0
 	if err == nil {
@@ -209,36 +294,47 @@ func request(ctx context.Context, client *http.Client, base string, rng *rand.Ra
 }
 
 // Account for a millisecond's slots together, with no unlimited catch-up after delays.
-func batch(elapsed, duration time.Duration, rate int, accounted int64) (int64, int64, int64) {
-	total := int64(math.Floor(duration.Seconds() * float64(rate)))
+func batch(elapsed, duration time.Duration, rate int, total, accounted int64) (int64, int64, int64) {
 	if elapsed >= duration {
 		return total, 0, total - accounted
 	}
-	horizon := min(elapsed+time.Millisecond, duration)
-	due := min(total, int64(math.Ceil(horizon.Seconds()*float64(rate))))
+	horizon := elapsed + min(time.Millisecond, duration-elapsed)
+	due := min(total, requestSlots(horizon, rate, true))
 	n := max(int64(0), due-accounted)
-	allowance := int64(math.Ceil(float64(rate) / 1000))
+	allowance := requestSlots(time.Millisecond, rate, true)
 	return due, min(n, allowance), max(int64(0), n-allowance)
 }
 
+func dispatch(jobs chan<- bbox, slots chan<- struct{}, first, end int64) (dropped int64) {
+	for slot := first; slot < end; slot++ {
+		select {
+		case slots <- struct{}{}:
+			jobs <- routeBounds(slot)
+		default:
+			dropped++
+		}
+	}
+	return dropped
+}
+
 func runStage(ctx context.Context, c config, rate int, client *http.Client, out io.Writer) result {
-	s := &counters{result: result{planned: int64(math.Floor(c.duration.Seconds() * float64(rate))), statuses: make(map[int]int64)}}
-	jobs := make(chan struct{}, c.concurrency)
+	planned := requestSlots(c.duration, rate, false)
+	s := &counters{result: result{planned: planned, statuses: make(map[int]int64)}}
+	jobs := make(chan bbox, c.concurrency)
 	slots := make(chan struct{}, c.concurrency)
 	var workers sync.WaitGroup
 	for i := 0; i < c.concurrency; i++ {
 		workers.Add(1)
-		go func(seed int64) {
+		go func() {
 			defer workers.Done()
-			rng := rand.New(rand.NewSource(seed))
-			for range jobs {
-				request(ctx, client, c.base, rng, s)
+			for bounds := range jobs {
+				request(ctx, client, c.base, bounds, s)
 				<-slots
 			}
-		}(time.Now().UnixNano() + int64(i))
+		}()
 	}
-	start := time.Now()
 	progressTable := newTable(out, []string{"Elapsed", "Target RPS", "Start RPS", "Completed", "Failures", "Late drops", "Capacity drops"}, len(strconv.FormatInt(s.planned, 10)))
+	start := time.Now()
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	progress := time.NewTicker(time.Second)
@@ -251,20 +347,14 @@ loop:
 		}
 		now := time.Since(start)
 		var sends, late int64
-		accounted, sends, late = batch(now, c.duration, rate, accounted)
+		accounted, sends, late = batch(now, c.duration, rate, planned, accounted)
+		// The oldest overdue slots are dropped. Remaining jobs keep their
+		// scheduled positions even when the concurrency limit drops more.
+		capacityDrops := dispatch(jobs, slots, accounted-sends, accounted)
 		s.Lock()
 		s.lateDrops += late
+		s.capacityDrops += capacityDrops
 		s.Unlock()
-		for i := int64(0); i < sends; i++ {
-			select {
-			case slots <- struct{}{}:
-				jobs <- struct{}{}
-			default:
-				s.Lock()
-				s.capacityDrops++
-				s.Unlock()
-			}
-		}
 		if now >= c.duration {
 			break
 		}
@@ -393,11 +483,14 @@ func execute(ctx context.Context, args []string, in io.Reader, out io.Writer) in
 	}
 	var planned int64
 	for i, rate := range c.rates {
-		n := int64(math.Floor(c.duration.Seconds() * float64(rate)))
+		n := requestSlots(c.duration, rate, false)
 		planned += n
 		fmt.Fprintf(out, "Stage %d: %d RPS for %gs (%d planned)\n", i+1, rate, c.duration.Seconds(), n)
 	}
-	fmt.Fprintf(out, "Endpoint: %s/fgb/collection; user 2; all datasets; random Norway boxes ~150 x 150 km\n", c.base)
+	fmt.Fprintf(out, "Endpoint: %s/fgb/collection (user 2)\n", c.base)
+	fmt.Fprintf(out, "Route: Bergen block → Breiviken → Florø → Bergen with all of Vestland in view (%d requests per loop)\n", routeSlots)
+	fmt.Fprintf(out, "Minimum stage duration: %.9f s at %d RPS\n", minimumStageDuration(c.rates[0]).Seconds(), c.rates[0])
+	fmt.Fprintln(out, "For a full-file response at the final waypoint, use a Vestland-only dataset accessible to user 2.")
 	fmt.Fprintf(out, "Total scheduling: %gs; planned: %d; concurrency: %d; timeout: %gs\n", c.duration.Seconds()*float64(len(c.rates)), planned, c.concurrency, c.timeout.Seconds())
 	if !c.yes {
 		fmt.Fprint(out, "Start? [y/N] ")
