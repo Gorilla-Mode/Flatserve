@@ -72,17 +72,24 @@ Configure the switches independently in `Flatserve/appsettings.json`:
 
 ## Generate metrics
 
-With the API already running, send requests for 60 seconds at a target of 10
-requests per second (600 planned requests):
-
-```sh
-python3 scripts/generate_metrics.py --duration 60 --rps 10
-```
+With the API already running, ramp from 1,000 to 10,000 requests per second in
+steps of 1,000, with 10 seconds per stage:
 
 ```sh
 cd loadgen
 go run . --duration 10 --rps 1000 --max-rps 10000 --step-rps 1000
 ```
+
+The Go load test repeats a fixed route every 301 scheduled requests. It starts
+at block level in central Bergen, zooms out to Breiviken, pans to Florø, and
+returns to Bergen while zooming out to cover Vestland. Each ramp stage starts
+at the Bergen block. Set `--duration` to at least 301 divided by `--rps`
+seconds, using the starting rate for a ramp. This schedules at least one
+loop per stage.
+
+For the final bbox to return the full dataset, configure the API to serve
+the Vestland-only FlatGeobuf file in EPSG:4326 with all features accessible
+to user 2.
 
 ## Plot metrics
 
