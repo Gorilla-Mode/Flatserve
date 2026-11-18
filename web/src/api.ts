@@ -1,8 +1,9 @@
-import { deserialize } from 'flatgeobuf/geojson';
 import type { HeaderMeta } from 'flatgeobuf/lib/mjs/header-meta.js';
 import type { Feature, Polygon } from 'geojson';
 import type { Bounds } from './bounds';
-import { readFgbParts } from './multipart';
+import { readResponseBytes } from './multipart';
+import { decodeResponse } from './decode';
+export { decodeResponse } from './decode';
 
 export type { HeaderMeta };
 
@@ -119,6 +120,8 @@ export interface DecodeOptions {
   onLayer?: (layer: FgbLayer) => void;
   batchSize?: number;
   onTiming?: (timing: RequestTiming) => void;
+  /** Yield to worker messages between bounded decoding batches. */
+  yieldControl?: () => Promise<void>;
 }
 
 export interface RequestTiming {
@@ -126,76 +129,6 @@ export interface RequestTiming {
   httpMs: number | null;
   downloadDecodeMs: number;
   totalMs: number;
-}
-
-/** Decode the response as it arrives, including headers/features split across chunks. */
-export async function decodeResponse(response: Response, options: DecodeOptions): Promise<Feature[]> {
-  const { signal, onBatch, onHeader, batchSize = 100 } = options;
-  signal.throwIfAborted();
-  if (!response.ok) throw new Error(`API returned HTTP ${response.status}.`);
-  if (!response.body) throw new Error('The API returned no response stream.');
-
-  if (/^multipart\/mixed\b/i.test(response.headers.get('content-type') ?? '')) {
-    const parts = await readFgbParts(response, signal);
-    const all: Feature[] = [];
-    for (const part of parts) {
-      signal.throwIfAborted();
-      const tag = (features: Feature[]) => features.map((feature) => ({ ...feature, fgbLayerId: part.id }));
-      const features = await decodeResponse(new Response(part.bytes), {
-        ...options,
-        onLayer: undefined,
-        onHeader: (header) => { onHeader?.(header); options.onLayer?.({ id: part.id, header }); },
-        onBatch: (batch) => onBatch?.([...all, ...tag(batch)]),
-      });
-      all.push(...tag(features));
-    }
-    return all;
-  }
-
-  // Own the reader so abort/early-exit also releases the decoder's underlying stream.
-  const reader = response.body.getReader();
-  const cancel = () => { void reader.cancel(signal.reason).catch(() => {}); };
-  signal.addEventListener('abort', cancel, { once: true });
-  const stream = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        const { done, value } = await reader.read();
-        if (done) controller.close();
-        else controller.enqueue(value);
-      } catch (error) {
-        controller.error(error);
-      }
-    },
-  });
-  const features: Feature[] = [];
-  let published = -1;
-  let lastBatch = performance.now();
-  try {
-    for await (const feature of deserialize(stream, {
-      headerMetaFn: (header) => {
-        signal.throwIfAborted();
-        onHeader?.(header);
-        options.onLayer?.({ id: 'dataset', header });
-      },
-    })) {
-      signal.throwIfAborted();
-      // Decoder IDs start at zero in every response, including split viewport requests.
-      const { id: _id, ...data } = feature;
-      features.push(data);
-      if (features.length % batchSize === 0 || performance.now() - lastBatch >= 50) {
-        onBatch?.(features.slice());
-        published = features.length;
-        lastBatch = performance.now();
-      }
-    }
-    signal.throwIfAborted();
-    if (published !== features.length) onBatch?.(features.slice());
-    return features;
-  } finally {
-    signal.removeEventListener('abort', cancel);
-    await reader.cancel().catch(() => {});
-    reader.releaseLock();
-  }
 }
 
 /** Match only a completed fetch in this call's window; never guess between entries. */
@@ -257,4 +190,44 @@ export async function fetchFeatures(url: URL, options: DecodeOptions): Promise<F
 
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'The request failed.';
+}
+
+/** Binary body and absolute timestamps are safe to transfer across performance contexts. */
+export interface BinaryResponse {
+  buffer: ArrayBuffer;
+  contentType: string;
+  url: string;
+  started: number;
+  headersReceived: number;
+  httpMs: number | null;
+}
+export interface DownloadOptions { signal: AbortSignal; cache?: RequestCache }
+
+export async function fetchBinary(url: URL, options: DownloadOptions): Promise<BinaryResponse> {
+  options.signal.throwIfAborted();
+  const requestUrl = url.href;
+  const active = activeTimings.get(requestUrl) ?? new Set<{ ambiguous: boolean }>();
+  const attribution = { ambiguous: active.size > 0 };
+  for (const other of active) other.ambiguous = true;
+  active.add(attribution);
+  activeTimings.set(requestUrl, active);
+  try {
+    const earlier = new Set(performance.getEntriesByName(requestUrl, 'resource'));
+    const started = performance.now();
+    const response = await fetch(url, { signal: options.signal, cache: options.cache,
+      credentials: 'omit', headers: { Accept: 'multipart/mixed, application/vnd.fgb' } });
+    const headersReceived = performance.now();
+    if (!response.ok) throw new Error(`API returned HTTP ${response.status}.`);
+    const bytes = await readResponseBytes(response, options.signal);
+    const finished = performance.now();
+    options.signal.throwIfAborted();
+    return { buffer: bytes.buffer, contentType: response.headers.get('content-type') ?? '', url: requestUrl,
+      started: performance.timeOrigin + started, headersReceived: performance.timeOrigin + headersReceived,
+      httpMs: attribution.ambiguous ? null : httpDuration(
+        performance.getEntriesByName(requestUrl, 'resource'), requestUrl, started, finished, earlier),
+    };
+  } finally {
+    active.delete(attribution);
+    if (!active.size) activeTimings.delete(requestUrl);
+  }
 }

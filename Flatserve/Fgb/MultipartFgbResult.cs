@@ -3,7 +3,7 @@ using System.Net.Http.Headers;
 
 namespace Flatserve.Fgb;
 
-public sealed class MultipartFgbResult(IReadOnlyList<(string LayerId, byte[] Bytes)> layers) : IActionResult
+public sealed class MultipartFgbResult(IReadOnlyList<(string LayerId, ArraySegment<byte> Bytes)> layers) : IActionResult
 {
     public async Task ExecuteResultAsync(ActionContext context)
     {
@@ -11,7 +11,7 @@ public sealed class MultipartFgbResult(IReadOnlyList<(string LayerId, byte[] Byt
         
         foreach (var (layerId, bytes) in layers)
         {
-            var part = new ByteArrayContent(bytes);
+            var part = new ByteArrayContent(bytes.Array!, bytes.Offset, bytes.Count);
             part.Headers.ContentType = new MediaTypeHeaderValue("application/vnd.fgb");
             part.Headers.ContentDisposition = new ContentDispositionHeaderValue("attachment")
             {

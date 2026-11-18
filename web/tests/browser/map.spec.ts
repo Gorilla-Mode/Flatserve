@@ -10,6 +10,10 @@ async function redOutline(page: Page) {
   return outlinePixels(page, [239, 68, 68]);
 }
 
+async function amberOutline(page: Page) {
+  return outlinePixels(page, [245, 158, 11]);
+}
+
 async function outlinePixels(page: Page, color: number[]) {
   // Measure outline pixels separately from the same-colored DOM labels.
   const screenshot = await page.locator('.maplibregl-canvas').screenshot({ style: '.bbox-label { visibility: hidden !important; }' });
@@ -55,7 +59,7 @@ test.beforeEach(async ({ page }) => {
   }));
 });
 
-test('Show buffer draws fetched coverage, stays fixed during reuse and pending work, and only changes visualization', async ({ page }) => {
+test('Show buffer draws fetched and prefetch coverage, stays fixed during reuse and pending work, and only changes visualization', async ({ page }) => {
   const requests: URL[] = [];
   const failed: string[] = [];
   page.on('request', (request) => {
@@ -66,7 +70,10 @@ test('Show buffer draws fetched coverage, stays fixed during reuse and pending w
   const show = page.getByRole('button', { name: 'Show buffer', exact: true });
   await expect(show).toBeDisabled();
   await expect(show).toHaveAttribute('aria-pressed', 'false');
-  await expect(show).toHaveAttribute('title', /red.*fetched.*coverage/);
+  await expect(show).toHaveAttribute('title', /red.*fetched.*30%/);
+  await expect(show).toHaveAttribute('title', /20%.*toward movement/);
+  await expect(page.getByRole('button', { name: 'Buffer', exact: true })).toHaveAttribute('title', /30%.*20%.*toward movement.*10%/);
+  await expect(show).toHaveAttribute('title', /amber.*prefetch/);
   await page.getByLabel('API URL', { exact: true }).fill('http://localhost:5221');
   await page.getByRole('dialog').getByRole('button', { name: 'Connect', exact: true }).click();
   await page.getByLabel('Select user', { exact: true }).selectOption('2');
@@ -83,18 +90,21 @@ test('Show buffer draws fetched coverage, stays fixed during reuse and pending w
   await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
   await expect(show).toBeEnabled();
   expect((await redOutline(page)).count).toBe(0);
+  expect((await amberOutline(page)).count).toBe(0);
   const fetched = requests.at(-1)!;
   const status = await page.getByRole('status').innerText();
   const before = requests.length;
   const green = await greenOutline(page);
   await show.click();
   const red = await redOutline(page);
+  const amber = await amberOutline(page);
   await page.screenshot({ path: 'test-results/bbox-labels.png' });
   for (const [text, color, outline] of [
     ['Viewport bbox', 'rgb(22, 163, 74)', green],
     ['Buffer bbox', 'rgb(239, 68, 68)', red],
+    ['Prefetch buffer bbox', 'rgb(245, 158, 11)', amber],
   ] as const) {
-    const label = page.locator('.bbox-label', { hasText: text });
+    const label = page.getByText(text, { exact: true });
     await expect(label).toBeVisible();
     await expect(label).toHaveCSS('color', color);
     const box = (await label.boundingBox())!;
@@ -103,26 +113,43 @@ test('Show buffer draws fetched coverage, stays fixed during reuse and pending w
     expect(box.y + box.height, `${text}: ${JSON.stringify({ box, mapBox, outline })}`).toBeLessThan(mapBox.y + outline.minY);
   }
   expect(red.count).toBeGreaterThan(100);
+  expect(amber.count).toBeGreaterThan(100);
+  expect(amber.minX).toBeGreaterThan(red.minX);
+  expect(amber.maxX).toBeLessThan(red.maxX);
+  expect(amber.minY).toBeGreaterThan(red.minY);
+  expect(amber.maxY).toBeLessThan(red.maxY);
   // Recover the viewport from its buffered request and project the fetched edges.
   const coordinate = (url: URL, key: string) => Number(url.searchParams.get(key));
   const edge = (key: string) => {
     const axis = key.endsWith('X') ? 'X' : 'Y';
     const min = coordinate(viewport, `min${axis}`), max = coordinate(viewport, `max${axis}`);
-    return key.startsWith('min') ? min + (max - min) / 6 : max - (max - min) / 6;
+    return key.startsWith('min') ? min + (max - min) * 0.3 / 1.6 : max - (max - min) * 0.3 / 1.6;
   };
   const mercator = (lat: number) => Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360));
   const x = (lng: number) => red.width * (lng - edge('minX')) / (edge('maxX') - edge('minX'));
   const y = (lat: number) => red.height * (mercator(edge('maxY')) - mercator(lat))
     / (mercator(edge('maxY')) - mercator(edge('minY')));
-  expect(Math.abs(red.minX - x(coordinate(fetched, 'minX')))).toBeLessThan(3);
-  expect(Math.abs(red.maxX - x(coordinate(fetched, 'maxX')))).toBeLessThan(3);
-  expect(Math.abs(red.minY - y(coordinate(fetched, 'maxY')))).toBeLessThan(3);
-  expect(Math.abs(red.maxY - y(coordinate(fetched, 'minY')))).toBeLessThan(3);
+  // Geographic expansion can put the larger buffer outside the visible canvas.
+  const canvasX = (lng: number) => Math.max(0, Math.min(red.width - 1, x(lng)));
+  const canvasY = (lat: number) => Math.max(0, Math.min(red.height - 1, y(lat)));
+  expect(Math.abs(red.minX - canvasX(coordinate(fetched, 'minX')))).toBeLessThan(3);
+  expect(Math.abs(red.maxX - canvasX(coordinate(fetched, 'maxX')))).toBeLessThan(3);
+  expect(Math.abs(red.minY - canvasY(coordinate(fetched, 'maxY')))).toBeLessThan(3);
+  expect(Math.abs(red.maxY - canvasY(coordinate(fetched, 'minY')))).toBeLessThan(3);
+  const queryWidth = (coordinate(fetched, 'maxX') - coordinate(fetched, 'minX')) / 1.6;
+  const queryHeight = (coordinate(fetched, 'maxY') - coordinate(fetched, 'minY')) / 1.6;
+  expect(Math.abs(amber.minX - x(coordinate(fetched, 'minX') + queryWidth * .1))).toBeLessThan(3);
+  expect(Math.abs(amber.maxX - x(coordinate(fetched, 'maxX') - queryWidth * .1))).toBeLessThan(3);
+  expect(Math.abs(amber.minY - y(coordinate(fetched, 'maxY') - queryHeight * .1))).toBeLessThan(3);
+  expect(Math.abs(amber.maxY - y(coordinate(fetched, 'minY') + queryHeight * .1))).toBeLessThan(3);
   await show.click();
   expect((await redOutline(page)).count).toBe(0);
-  await expect(page.locator('.bbox-label', { hasText: 'Buffer bbox' })).toHaveCount(0);
+  expect((await amberOutline(page)).count).toBe(0);
+  await expect(page.getByText('Buffer bbox', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Prefetch buffer bbox', { exact: true })).toHaveCount(0);
   await show.click();
   expect(await redOutline(page)).toEqual(red);
+  expect(await amberOutline(page)).toEqual(amber);
   expect(await greenOutline(page)).toEqual(green);
   await expect(page.getByRole('status')).toHaveText(status);
   expect(requests).toHaveLength(before);
@@ -131,8 +158,11 @@ test('Show buffer draws fetched coverage, stays fixed during reuse and pending w
   await page.mouse.down();
   await moveOnMap(page, .45 + 40 / red.width, .625, 10);
   const reused = await redOutline(page);
+  const reusedPrefetch = await amberOutline(page);
   expect(Math.abs(reused.minX - red.minX - 40)).toBeLessThan(3);
-  expect(Math.abs(reused.maxX - red.maxX - 40)).toBeLessThan(3);
+  expect(Math.abs(reused.maxX - Math.min(red.width - 1, red.maxX + 40))).toBeLessThan(3);
+  expect(Math.abs(reusedPrefetch.minX - amber.minX - 40)).toBeLessThan(3);
+  expect(Math.abs(reusedPrefetch.maxX - amber.maxX - 40)).toBeLessThan(3);
   expect(requests).toHaveLength(before);
 
   let release!: () => void;
@@ -147,22 +177,43 @@ test('Show buffer draws fetched coverage, stays fixed during reuse and pending w
   });
   await moveOnMap(page, .45 + 240 / red.width, .625, 20);
   await expect.poll(() => requests.length).toBe(before + 1);
+  // Recover the query displacement by removing the new 10% directional offset.
+  // Fetching starts at the 20% boundary, inside the old 30% fetched buffer.
+  const shift = Math.abs(coordinate(requests.at(-1)!, 'minX') - coordinate(fetched, 'minX')) / queryWidth - .1;
+  expect(shift).toBeGreaterThanOrEqual(.2 - 1e-6);
+  expect(shift).toBeLessThan(.3);
   await expect(page.getByRole('status')).toContainText('Loading');
   const pending = await redOutline(page);
+  const pendingPrefetch = await amberOutline(page);
   expect(Math.abs(pending.minX - red.minX - 240)).toBeLessThan(3);
+  expect(Math.abs(pendingPrefetch.minX - amber.minX - 240)).toBeLessThan(3);
   const pendingStatus = await page.getByRole('status').innerText();
   // Toggle with keyboard so the map drag can stay held without inertia.
   await show.focus();
   await page.keyboard.press('Space');
   expect((await redOutline(page)).count).toBe(0);
+  expect((await amberOutline(page)).count).toBe(0);
   await page.keyboard.press('Space');
   expect(await redOutline(page)).toEqual(pending);
+  expect(await amberOutline(page)).toEqual(pendingPrefetch);
   await expect(page.getByRole('status')).toHaveText(pendingStatus);
   expect(requests).toHaveLength(before + 1);
   expect(failed).toEqual([]);
   release();
   await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
   await expect.poll(async () => (await redOutline(page)).minX).toBeLessThan(pending.minX - 50);
+  await expect.poll(async () => (await amberOutline(page)).minX).toBeLessThan(pendingPrefetch.minX - 50);
+  const replacement = requests.at(-1)!;
+  const movedX = (lng: number) => Math.max(0, Math.min(red.width - 1, x(lng) + 240));
+  const replacementRed = await redOutline(page);
+  const replacementAmber = await amberOutline(page);
+  // Both outlines use the new directional request, retaining exactly 10% spacing.
+  expect(Math.abs(replacementRed.minX - movedX(coordinate(replacement, 'minX')))).toBeLessThan(3);
+  expect(Math.abs(replacementRed.maxX - movedX(coordinate(replacement, 'maxX')))).toBeLessThan(3);
+  expect(Math.abs(replacementAmber.minX - movedX(coordinate(replacement, 'minX') + queryWidth * .1))).toBeLessThan(3);
+  expect(Math.abs(replacementAmber.maxX - movedX(coordinate(replacement, 'maxX') - queryWidth * .1))).toBeLessThan(3);
+  expect(Math.abs(replacementAmber.minY - canvasY(coordinate(replacement, 'maxY') - queryHeight * .1))).toBeLessThan(3);
+  expect(Math.abs(replacementAmber.maxY - canvasY(coordinate(replacement, 'minY') + queryHeight * .1))).toBeLessThan(3);
   await page.mouse.up();
   expect(failed).toEqual([]);
 });
@@ -186,15 +237,18 @@ test('preserves Show buffer through prerequisites and reconnections, hiding cove
   await expect(page.getByRole('status')).toHaveText(/^\d+ features in bbox$/);
   await show.click();
   await expect.poll(async () => (await redOutline(page)).count).toBeGreaterThan(100);
+  await expect.poll(async () => (await amberOutline(page)).count).toBeGreaterThan(100);
   for (const name of ['Buffer', 'BBox']) {
     const mode = page.getByRole('button', { name, exact: true });
     await mode.click();
     await expect(show).toBeDisabled();
     await expect(show).toHaveAttribute('aria-pressed', 'true');
     expect((await redOutline(page)).count).toBe(0);
+    expect((await amberOutline(page)).count).toBe(0);
     await mode.click();
     await expect(show).toBeEnabled();
     await expect.poll(async () => (await redOutline(page)).count).toBeGreaterThan(100);
+    await expect.poll(async () => (await amberOutline(page)).count).toBeGreaterThan(100);
   }
   const select = page.getByLabel('Brannvesen', { exact: true });
   await select.selectOption({ label: 'Oslo brann- og redningsetat' });
@@ -203,9 +257,11 @@ test('preserves Show buffer through prerequisites and reconnections, hiding cove
   await expect(show).toBeDisabled();
   await expect(show).toHaveAttribute('aria-pressed', 'true');
   expect((await redOutline(page)).count).toBe(0);
+  expect((await amberOutline(page)).count).toBe(0);
   await page.getByRole('button', { name: 'Filter', exact: true }).click();
   await expect(show).toBeEnabled();
   await expect.poll(async () => (await redOutline(page)).count).toBeGreaterThan(100);
+  await expect.poll(async () => (await amberOutline(page)).count).toBeGreaterThan(100);
   let releaseRequest!: () => void;
   const heldRequest = new Promise<void>((resolve) => { releaseRequest = resolve; });
   await page.route('http://localhost:5221/fgb/collection?**', async (route) => {
@@ -219,8 +275,10 @@ test('preserves Show buffer through prerequisites and reconnections, hiding cove
   await expect(page.getByRole('status')).toContainText('Loading');
   await expect(show).toHaveAttribute('aria-pressed', 'true');
   expect((await redOutline(page)).count).toBe(0);
+  expect((await amberOutline(page)).count).toBe(0);
   releaseRequest();
   await expect.poll(async () => (await redOutline(page)).count).toBeGreaterThan(100);
+  await expect.poll(async () => (await amberOutline(page)).count).toBeGreaterThan(100);
   await page.reload();
   await expect(show).toBeDisabled();
   await expect(show).toHaveAttribute('aria-pressed', 'false');
@@ -526,12 +584,12 @@ test('bbox follows the camera, survives filters, wraps on mobile, and restores v
   for (const key of ['minX', 'minY']) expect(Number(inset.searchParams.get(key))).toBeGreaterThan(Number(viewport.searchParams.get(key)));
   for (const key of ['maxX', 'maxY']) expect(Number(inset.searchParams.get(key))).toBeLessThan(Number(viewport.searchParams.get(key)));
   await expectInsetOutline(page);
-  // Recover the active rectangles from the invisible 25%-per-side request buffers.
+  // Recover the active rectangles from the invisible 30%-per-side request buffers.
   const pixels = await greenOutline(page);
   const coordinate = (url: URL, key: string) => {
     const min = Number(url.searchParams.get(key.endsWith('X') ? 'minX' : 'minY'));
     const max = Number(url.searchParams.get(key.endsWith('X') ? 'maxX' : 'maxY'));
-    return key.startsWith('min') ? min + (max - min) / 6 : max - (max - min) / 6;
+    return key.startsWith('min') ? min + (max - min) * 0.3 / 1.6 : max - (max - min) * 0.3 / 1.6;
   };
   const mercatorY = (latitude: number) => Math.log(Math.tan(Math.PI / 4 + latitude * Math.PI / 360));
   const screenX = (longitude: number) => pixels.width * (longitude - coordinate(viewport, 'minX'))
@@ -749,8 +807,8 @@ for (const useBbox of [false, true]) {
     for (const axis of ['X', 'Y']) {
       const min = Number(exact.searchParams.get(`min${axis}`));
       const max = Number(exact.searchParams.get(`max${axis}`));
-      expect(Number(expanded.searchParams.get(`min${axis}`))).toBeCloseTo(min - (max - min) * .25, 7);
-      expect(Number(expanded.searchParams.get(`max${axis}`))).toBeCloseTo(max + (max - min) * .25, 7);
+      expect(Number(expanded.searchParams.get(`min${axis}`))).toBeCloseTo(min - (max - min) * .3, 7);
+      expect(Number(expanded.searchParams.get(`max${axis}`))).toBeCloseTo(max + (max - min) * .3, 7);
     }
     expect(await greenOutline(page)).toEqual(outline);
     let release!: () => void;

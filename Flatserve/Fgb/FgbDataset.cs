@@ -7,7 +7,6 @@ using FlatGeobuf.NTS;
 using Flatserve.Index;
 using Google.FlatBuffers;
 using NetTopologySuite.Geometries;
-using NetTopologySuite.Operation.Valid;
 
 namespace Flatserve.Fgb;
 
@@ -95,17 +94,20 @@ public record FgbDataset
         headerBytes.CopyTo(_exportHeader, Constants.MagicBytes.Length);
     }
 
-    public Byte[] GetBytes(Envelope bbox, Polygon allowedArea)
+    public void GetBytes(Envelope bbox, Polygon allowedArea, Stream output)
     {
         if (_spatialIndex.Length == 0)
             throw new InvalidOperationException("Spatial index is empty");
         
+        #region Metrics
         var logInformation = _logger.IsEnabled(LogLevel.Information);
         var recordMetrics = _metrics.Enabled;
         var measure = recordMetrics || logInformation;
         var started = measure ? Stopwatch.GetTimestamp() : 0;
-        using var output = new MemoryStream();
+        #endregion
+        
         output.Write(_exportHeader);
+        long bytesWritten = _exportHeader.Length;
         
         Stream ReadNode(ulong offset, ulong length)
         {
@@ -116,10 +118,12 @@ public record FgbDataset
                 writable: false);
         }
         
+        #region Metrics
         var start = measure ? Stopwatch.GetTimestamp() : 0;
         var events = logInformation ? new StringBuilder() : null;
         var featureMetrics = recordMetrics ? new List<object>() : null;
         var written = 0;
+        #endregion
         
         var intersects = PackedRTree.StreamSearch(
             _header.FeaturesCount,
@@ -136,11 +140,13 @@ public record FgbDataset
         
         foreach (var intersect in intersects)
         {
+            #region Metrics
             var startIntersect = measure ? Stopwatch.GetTimestamp() : 0;
             if (logInformation)
                 events!.Append($"\t\tProcessing feature {intersect.Index} at offset {intersect.Offset}\n");
-            
             var startDecode = recordMetrics ? Stopwatch.GetTimestamp() : 0;
+            #endregion
+            
             ulong payloadLength = BinaryPrimitives.ReadUInt32LittleEndian(
                 _data.AsSpan(
                     checked((int)intersect.Offset),
@@ -150,36 +156,64 @@ public record FgbDataset
                 intersect.Offset,
                 checked(payloadLength + FgbFeaturePtr.LengthPrefix));
             
-            var feature = FeatureConversions.FromByteBuffer(factory,
-                sequenceFactory,
-                new ByteBuffer(GetRawFeatureBytes(pointer)),
-                _header);
+            var rawFeature = Feature.GetRootAsFeature(
+                new ByteBuffer(_data, checked((int)pointer.PayloadOffset)));
 
+            NetTopologySuite.Geometries.Geometry? geometry = null;
+
+            if (rawFeature.Geometry.HasValue)
+            {
+                var rawGeometry = rawFeature.Geometry.Value;
+
+                try
+                {
+                    geometry = GeometryConversions.FromFlatbuf(
+                        factory, sequenceFactory, ref rawGeometry, _header);
+                }
+                catch (ArgumentException)
+                {
+                    // Preserve the existing decoder's handling of invalid geometry.
+                }
+            }
+            #region Metrics
             var decodeUs = recordMetrics ? Stopwatch.GetElapsedTime(startDecode).TotalMicroseconds : 0;
             var startAuthCheck = measure ? Stopwatch.GetTimestamp() : 0;
-            var accepted = feature.Geometry is not null && allowedArea.Intersects(feature.Geometry);
+            #endregion 
+            
+            var accepted = geometry is not null &&
+                           allowedArea.Intersects(geometry);
+            #region Metrics
             var authUs = measure ? Stopwatch.GetElapsedTime(startAuthCheck).TotalMicroseconds : 0;
             var writeUs = 0d;
+            #endregion
 
             if (accepted)
             {
+                #region Metrics
                 if (logInformation)
                     events!.Append($"\t\t  Intersected with allowed area in {authUs:F3} μs\n");
                 var startWrite = recordMetrics ? Stopwatch.GetTimestamp() : 0;
+                #endregion
+                
                 WriteFeature(output, pointer);
+                bytesWritten += checked((long)pointer.Length);
+                
+                #region Metrics
                 writeUs = recordMetrics ? Stopwatch.GetElapsedTime(startWrite).TotalMicroseconds : 0;
                 written++;
                 if (logInformation)
                     events!.Append(
                         $"\t\t  Written to buffer in {Stopwatch.GetElapsedTime(startIntersect).TotalMicroseconds:F3} μs\n");
+                #endregion
             }
 
+            #region Metrics
             if (recordMetrics)
             {
                 featureMetrics!.Add(new
                 {
                     FeatureIndex = intersect.Index,
-                    Offset = intersect.Offset,
+                    intersect.Offset,
                     Accepted = accepted,
                     DecodeUs = decodeUs,
                     AuthorizationUs = authUs,
@@ -187,9 +221,10 @@ public record FgbDataset
                     DurationUs = Stopwatch.GetElapsedTime(startIntersect).TotalMicroseconds
                 });
             }
+            #endregion
         }
-
-        var result = output.ToArray();
+        
+        #region Metrics
         var elapsed = measure ? Stopwatch.GetElapsedTime(started) : TimeSpan.Zero;
         if (recordMetrics)
         {
@@ -203,7 +238,7 @@ public record FgbDataset
                 SearchSetupUs = searchSetupUs,
                 CandidateCount = featureMetrics!.Count,
                 WrittenCount = written,
-                Bytes = result.Length,
+                Bytes = bytesWritten,
                 Features = featureMetrics
             });
         }
@@ -213,7 +248,7 @@ public record FgbDataset
             events!.Append($"\tProcessed {written} features in {elapsed.TotalMilliseconds:F3} ms\n");
             _logger.LogInformation("GetBytes:\n{Events}", events.ToString());
         }
-        return result;
+        #endregion
     }
     
     public Byte[] GetFeatureBytes(FgbFeaturePtr featurePtr)
@@ -226,31 +261,25 @@ public record FgbDataset
         return output.ToArray();
     }
 
-    private byte[] GetRawFeatureBytes(FgbFeaturePtr featurePtr) =>
-        _data.AsSpan(
-            checked((int)featurePtr.PayloadOffset),
-            checked((int)featurePtr.PayloadLength)).ToArray(); 
+    private ByteBuffer GetRawFeatureBytes(FgbFeaturePtr featurePtr) =>
+        new ByteBuffer(_data, checked((int)featurePtr.PayloadOffset)); 
 
     private void WriteFeature(Stream output, FgbFeaturePtr featurePtr) =>
         output.Write(_data.AsSpan(
             checked((int)featurePtr.Offset),
             checked((int)featurePtr.Length)));
 
-    public Byte[] FilterTextAttribute(string attribute, string value)
+    public void FilterTextAttribute(string attribute, string value, Stream output)
     {
-        var features = _textIndexes.TryGetValue(attribute, out var index)
-            ? index.Get(value)
-            : Array.Empty<FgbFeaturePtr>();
-        
-        using var output = new MemoryStream();
         output.Write(_exportHeader);
+        
+        if(!_textIndexes.TryGetValue(attribute, out var index))
+            return;
 
-        foreach (var feature in features)
+        foreach (var pointer in index.Get(value))
         {
-            WriteFeature(output, feature);
+            WriteFeature(output, pointer);
         }
-
-        return output.ToArray();
     }
 
     private List<FgbFeaturePtr> GetFeaturePtrs(MemoryStream stream, BinaryReader reader)
@@ -295,7 +324,7 @@ public record FgbDataset
         {
             var feature = FeatureConversions.FromByteBuffer(factory,
                 sequenceFactory,
-                new ByteBuffer(GetRawFeatureBytes(pointer)),
+                GetRawFeatureBytes(pointer),
                 _header);
 
             var attributes = feature.Attributes;
