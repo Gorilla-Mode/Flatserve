@@ -5,7 +5,12 @@ using Flatserve.User;
 
 var builder = WebApplication.CreateBuilder(args);
 
-await using var metrics = new MetricsWriter(Path.Combine(builder.Environment.ContentRootPath, "metrics.jsonl"));
+if (!builder.Configuration.GetValue("Logging:Enabled", true))
+    builder.Logging.ClearProviders();
+
+await using var metrics = new MetricsWriter(
+    Path.Combine(builder.Environment.ContentRootPath, "metrics.jsonl"),
+    builder.Configuration.GetValue("Metrics:Enabled", true));
 builder.Services.AddSingleton(metrics);
 
 builder.Services.AddControllers();
@@ -67,72 +72,110 @@ UserCollection.AddUser(new User
 
 var app = builder.Build();
 
-using var gcPauses = new GcPauseListener(metrics, app.Logger);
+using var gcPauses = metrics.Enabled ? new GcPauseListener(metrics, app.Logger) : null;
 
-var gcLogGate = new object();
-var lastGcIndex = GC.GetGCMemoryInfo().Index;
-
-await using var gcTimer = new Timer(_ =>
+Timer? StartGcTimer()
 {
-    lock (gcLogGate)
-    {
-        var gc = GC.GetGCMemoryInfo();
+    if (!metrics.Enabled && !app.Logger.IsEnabled(LogLevel.Information))
+        return null;
 
-        if (gc.Index == lastGcIndex)
+    var gcLogGate = new object();
+    var lastGcIndex = GC.GetGCMemoryInfo().Index;
+
+    return new Timer(_ =>
+    {
+        lock (gcLogGate)
+        {
+            var logInformation = app.Logger.IsEnabled(LogLevel.Information);
+            if (!metrics.Enabled && !logInformation)
+                return;
+
+            var gc = GC.GetGCMemoryInfo();
+
+            if (gc.Index == lastGcIndex)
+                return;
+
+            lastGcIndex = gc.Index;
+
+            var totalPause = GC.GetTotalPauseDuration();
+            if (metrics.Enabled)
+            {
+                metrics.Write(new
+                {
+                    Timestamp = DateTimeOffset.UtcNow,
+                    Type = "gc_total",
+                    Collection = gc.Index,
+                    DurationUs = totalPause.TotalMicroseconds
+                });
+            }
+
+            if (logInformation)
+            {
+                app.Logger.LogInformation(
+                    "\u001b[91mTotal GC pause time: {TotalMs:F3} ms\u001b[0m",
+                    totalPause.TotalMilliseconds);
+            }
+        }
+    }, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+}
+
+await using var gcTimer = StartGcTimer();
+
+if (metrics.Enabled || app.Logger.IsEnabled(LogLevel.Information))
+{
+    app.Use(async (context, next) =>
+    {
+        var logInformation = app.Logger.IsEnabled(LogLevel.Information);
+        if (!metrics.Enabled && !logInformation)
+        {
+            await next(context);
             return;
+        }
 
-        lastGcIndex = gc.Index;
+        var started = Stopwatch.GetTimestamp();
+        // Hosting may omit its Activity when logging providers are disabled.
+        // Keep request and GetBytes records correlated independently of logging.
+        using var activity = metrics.Enabled && Activity.Current is null
+            ? new Activity("Flatserve.Request").SetIdFormat(ActivityIdFormat.W3C).Start()
+            : null;
+        var traceId = metrics.Enabled ? Activity.Current?.TraceId.ToString() : null;
 
-        var observedAt = DateTimeOffset.UtcNow;
-        var totalPause = GC.GetTotalPauseDuration();
-        metrics.Write(new
+        context.Response.OnCompleted(() =>
         {
-            Timestamp = observedAt,
-            Type = "gc_total",
-            Collection = gc.Index,
-            DurationUs = totalPause.TotalMicroseconds
+            var elapsed = Stopwatch.GetElapsedTime(started);
+            if (metrics.Enabled)
+            {
+                metrics.Write(new
+                {
+                    Timestamp = DateTimeOffset.UtcNow,
+                    Type = "request",
+                    TraceId = traceId,
+                    RequestId = context.TraceIdentifier,
+                    Method = context.Request.Method,
+                    Path = context.Request.Path.Value,
+                    Query = context.Request.QueryString.Value,
+                    StatusCode = context.Response.StatusCode,
+                    DurationUs = elapsed.TotalMicroseconds
+                });
+            }
+
+            if (logInformation)
+            {
+                app.Logger.LogInformation(
+                    "Request {RequestId}: {Method} {Path} returned {StatusCode} in {ElapsedMs:F3} ms",
+                    context.TraceIdentifier,
+                    context.Request.Method,
+                    context.Request.Path,
+                    context.Response.StatusCode,
+                    elapsed.TotalMilliseconds);
+            }
+
+            return Task.CompletedTask;
         });
 
-        app.Logger.LogInformation(
-            "\u001b[91mTotal GC pause time: {TotalMs:F3} ms\u001b[0m",
-            totalPause.TotalMilliseconds);
-    }
-}, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
-
-app.Use(async (context, next) =>
-{
-    var started = Stopwatch.GetTimestamp();
-    var traceId = Activity.Current?.TraceId.ToString();
-
-    context.Response.OnCompleted(() =>
-    {
-        var elapsed = Stopwatch.GetElapsedTime(started);
-        metrics.Write(new
-        {
-            Timestamp = DateTimeOffset.UtcNow,
-            Type = "request",
-            TraceId = traceId,
-            RequestId = context.TraceIdentifier,
-            Method = context.Request.Method,
-            Path = context.Request.Path.Value,
-            Query = context.Request.QueryString.Value,
-            StatusCode = context.Response.StatusCode,
-            DurationUs = elapsed.TotalMicroseconds
-        });
-
-        app.Logger.LogInformation(
-            "Request {RequestId}: {Method} {Path} returned {StatusCode} in {ElapsedMs:F3} ms",
-            context.TraceIdentifier,
-            context.Request.Method,
-            context.Request.Path,
-            context.Response.StatusCode,
-            elapsed.TotalMilliseconds);
-
-        return Task.CompletedTask;
+        await next(context);
     });
-
-    await next(context);
-});
+}
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())

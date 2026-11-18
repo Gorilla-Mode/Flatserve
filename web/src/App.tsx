@@ -20,6 +20,7 @@ import type { PreparedStylesheet } from './stylesheet';
 setWorkerUrl(workerUrl);
 const viewportColor = '#16a34a';
 const bufferColor = '#ef4444';
+const prefetchColor = '#f59e0b';
 function bboxLabel(map: MapLibreMap, text: string, color: string, position: [number, number]): Marker {
   const element = document.createElement('div');
   element.className = 'bbox-label';
@@ -73,6 +74,7 @@ export function App() {
   const [bufferEnabled, setBufferEnabled] = useState(true);
   const [showBuffer, setShowBuffer] = useState(false);
   const [coverage, setCoverage] = useState<Bounds[] | undefined>();
+  const [prefetchCoverage, setPrefetchCoverage] = useState<Bounds[] | undefined>();
   const bboxActive = bboxEnabled && selection === '';
   const canShowBuffer = !!connection && mapReady && bboxActive && bufferEnabled;
   const [view, setView] = useState<ViewState>(viewRef.current);
@@ -124,6 +126,11 @@ export function App() {
       instance.addLayer({
         id: 'fetched-buffer', type: 'line', source: 'fetched-buffer',
         paint: { 'line-color': bufferColor, 'line-width': 3 },
+      });
+      instance.addSource('prefetch-buffer', { type: 'geojson', data: collection([]) });
+      instance.addLayer({
+        id: 'prefetch-buffer', type: 'line', source: 'prefetch-buffer',
+        paint: { 'line-color': prefetchColor, 'line-width': 3 },
       });
       setMapReady(true);
     });
@@ -241,13 +248,13 @@ export function App() {
     setHiddenLayers(new Set());
     let fitted = false;
     const current = new DatasetSession(connection.url, {
-      onFeatures: (features) => {
-        viewport.setData(features);
-      },
+      onDataset: (handle) => viewport.setData(handle),
+      onInvalidate: () => viewport.invalidate(),
       onStatus: setStatus,
       onDiscovery: setDiscovery,
       onLayers: setLayers,
       onCoverage: setCoverage,
+      onPrefetchCoverage: setPrefetchCoverage,
       onTiming: recordTiming,
       onHeader: (header) => {
         const extent = header.envelope;
@@ -257,7 +264,7 @@ export function App() {
           padding: 45, duration: 0, maxZoom: 12,
         });
       },
-    });
+    }, viewport);
     session.current = current;
     void current.discover();
     return () => {
@@ -270,13 +277,20 @@ export function App() {
 
   useEffect(() => {
     if (!mapReady) return;
-    const outline = showBuffer && canShowBuffer && coverage ? coverageOutline(coverage) : undefined;
-    (map.current?.getSource('fetched-buffer') as GeoJSONSource | undefined)
-      ?.setData(collection(outline ? [outline] : []));
-    if (!outline || !map.current || !coverage?.length) return;
-    const label = bboxLabel(map.current, 'Buffer bbox', bufferColor, [coverage[0].minX, coverage[0].maxY]);
-    return () => { label.remove(); };
-  }, [mapReady, showBuffer, canShowBuffer, coverage]);
+    const labels: Marker[] = [];
+    for (const [source, bounds, text, color] of [
+      ['fetched-buffer', coverage, 'Buffer bbox', bufferColor],
+      ['prefetch-buffer', prefetchCoverage, 'Prefetch buffer bbox', prefetchColor],
+    ] as const) {
+      const outline = showBuffer && canShowBuffer && bounds ? coverageOutline(bounds) : undefined;
+      (map.current?.getSource(source) as GeoJSONSource | undefined)
+        ?.setData(collection(outline ? [outline] : []));
+      if (outline && map.current && bounds?.length) {
+        labels.push(bboxLabel(map.current, text, color, [bounds[0].minX, bounds[0].maxY]));
+      }
+    }
+    return () => { labels.forEach((label) => label.remove()); };
+  }, [mapReady, showBuffer, canShowBuffer, coverage, prefetchCoverage]);
 
   useEffect(() => {
     if (!connection || !mapReady || !map.current) return;
@@ -353,12 +367,12 @@ export function App() {
             </li>
             <li>
               <button disabled={!connection || !mapReady || selection !== ''} aria-pressed={bufferEnabled}
-                title="Fetch an extra 25% on each side of the viewport or BBox to reduce requests while moving."
+                title="Use a 30% fetched margin and a 20% prefetch margin per side of the viewport or BBox. Shift both toward movement by up to 10%; fetch again at the prefetch boundary."
                 onClick={() => setBufferEnabled(!bufferEnabled)}>Buffer</button>
               <ul>
                 <li>
                   <button disabled={!canShowBuffer} aria-pressed={showBuffer}
-                    title="Show a red outline around the last successfully fetched buffer coverage."
+                    title="Show the red fetched buffer (30% margin) and amber prefetch buffer (20% margin), positioned toward movement. The next fetch starts at the prefetch boundary."
                     onClick={() => setShowBuffer(!showBuffer)}>Show buffer</button>
                 </li>
               </ul>
@@ -367,7 +381,6 @@ export function App() {
               <label htmlFor="user">Select user</label>
               <select id="user" value={selectedUser ?? ''} onChange={(event) => {
                 const userId = Number(event.target.value);
-                statistics.current?.invalidate();
                 void session.current?.setUser(userId);
                 setSelectedUser(userId);
               }}>

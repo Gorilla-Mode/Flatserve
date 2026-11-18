@@ -1,4 +1,5 @@
-import type { Feature } from 'geojson';
+import type { BinaryResponse } from './api';
+import type { DecodedDataset } from './snapshotWorker';
 import type { Bounds } from './bounds';
 import type { DataBatch } from './dataset';
 import { materialize } from './snapshot';
@@ -13,7 +14,7 @@ export interface ViewState {
 }
 export interface StatisticsWorker {
   onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null;
-  postMessage(message: WorkerRequest): void;
+  postMessage(message: WorkerRequest, transfer?: Transferable[]): void;
   terminate(): void;
 }
 export interface SnapshotRenderer {
@@ -40,11 +41,13 @@ export class ViewportStatistics {
   private lastSent = -Infinity;
   private timer?: ReturnType<typeof setTimeout>;
   private disposed = false;
-  private desired?: { features: Feature[]; version: number; epoch: number };
+  private desired?: { handle: number; version: number; epoch: number };
   private transaction?: { version: number; epoch: number; delta?: SnapshotDelta; batch?: DataBatch; uploaded?: boolean; refreshedCamera?: boolean };
   private renderer?: SnapshotRenderer;
   private blocked = false;
   private clearing = false;
+  private nextRequest = 0;
+  private decodes = new Map<number, { resolve: (dataset: DecodedDataset) => void; reject: (error: unknown) => void; cleanup: () => void }>();
 
   constructor(private readonly connection: number, private readonly publish: (state: ViewState) => void,
     private readonly worker: StatisticsWorker = new Worker(new URL('./viewport.worker.ts', import.meta.url), { type: 'module' }),
@@ -54,20 +57,59 @@ export class ViewportStatistics {
 
   setRenderer(renderer: SnapshotRenderer | undefined): void {
     this.renderer = renderer;
+    if (this.transaction) {
+      this.transaction.uploaded = false;
+      this.commitQuery = undefined;
+    }
     if (renderer) {
       // Hydrate newly created sources from the acknowledged snapshot before accepting diffs.
       this.blocked = true;
-      void renderer.apply(this.batch).then(() => {
+      const hydration = renderer.apply(this.batch);
+      if (this.clearing) renderer.hide();
+      void hydration.then(() => {
         if (this.disposed || this.renderer !== renderer) return;
         this.blocked = false;
-        this.start();
-      }).catch((error) => this.onError(error));
+        if (this.transaction?.batch && this.transaction.epoch !== this.epoch) {
+          this.worker.postMessage({ type: 'discard', connection: this.connection, version: this.transaction.version });
+          this.transaction = undefined;
+        }
+        if (this.transaction?.batch) this.upload(this.transaction);
+        else this.start();
+      }).catch((error) => {
+        if (!this.disposed && this.renderer === renderer) this.onError(error);
+      });
     }
   }
 
-  setData(features: Feature[]): void {
+  async decode(responses: BinaryResponse[], signal: AbortSignal, discovery = false): Promise<DecodedDataset> {
+    signal.throwIfAborted();
+    if (this.disposed) return Promise.reject(new Error('Connection disposed.'));
+    const request = ++this.nextRequest;
+    return new Promise((resolve, reject) => {
+      const abort = () => {
+        this.worker.postMessage({ type: 'cancel', connection: this.connection, request });
+        this.decodes.delete(request);
+        cleanup();
+        reject(signal.reason);
+      };
+      const cleanup = () => signal.removeEventListener('abort', abort);
+      this.decodes.set(request, { resolve, reject, cleanup });
+      signal.addEventListener('abort', abort, { once: true });
+      try {
+        this.worker.postMessage({ type: 'decode', connection: this.connection, request, responses, discovery },
+          responses.map((response) => response.buffer));
+      } catch (error) { this.decodes.delete(request); cleanup(); reject(error); }
+    });
+  }
+
+  release(handle: number): void {
+    if (!this.disposed) this.worker.postMessage({ type: 'release', connection: this.connection, handle });
+  }
+
+  setData(handle: number): void {
     if (this.disposed) return;
-    this.desired = { features, version: ++this.version, epoch: this.epoch };
+    if (this.desired) this.release(this.desired.handle);
+    this.desired = { handle, version: ++this.version, epoch: this.epoch };
     this.start();
   }
 
@@ -77,6 +119,7 @@ export class ViewportStatistics {
     this.epoch++;
     this.renderer?.hide();
     this.clearing = true;
+    if (this.desired) this.release(this.desired.handle);
     this.desired = undefined;
     this.state = { ...this.state, counts: {}, membership: this.bbox ? {} : null };
     this.publish(this.state);
@@ -89,13 +132,13 @@ export class ViewportStatistics {
   }
   private start(): void {
     if (this.disposed || this.blocked || !this.renderer || this.transaction) return;
-    const desired = this.clearing ? { features: [], version: ++this.version, epoch: this.epoch } : this.desired;
+    const desired = this.clearing ? { handle: null, version: ++this.version, epoch: this.epoch } : this.desired;
     if (!desired) return;
     if (desired.version <= this.batch.version) desired.version = ++this.version;
     if (!this.clearing) this.desired = undefined;
     this.transaction = { version: desired.version, epoch: desired.epoch };
     this.worker.postMessage({ type: 'data', connection: this.connection, version: desired.version,
-      features: desired.features, view: this.query(desired.version) });
+      handle: desired.handle, view: this.query(desired.version) });
   }
 
   setView(bounds: Bounds[], bbox: boolean, text: boolean, final = false): void {
@@ -130,8 +173,40 @@ export class ViewportStatistics {
     this.worker.postMessage(query);
   }
 
+  /** Recreated sources hydrate the acknowledged snapshot, then resume the same candidate. */
+  private upload(transaction: NonNullable<ViewportStatistics['transaction']>): void {
+    const renderer = this.renderer;
+    if (!renderer || this.blocked || !transaction.batch) return;
+    transaction.uploaded = false;
+    this.commitQuery = undefined;
+    void renderer.apply(transaction.batch).then(() => {
+      if (this.disposed || this.transaction !== transaction || this.renderer !== renderer) return;
+      transaction.uploaded = true;
+      this.queryCommit(transaction.version);
+    }).catch((error) => {
+      if (this.disposed || this.transaction !== transaction || this.renderer !== renderer) return;
+      this.worker.postMessage({ type: 'discard', connection: this.connection, version: transaction.version });
+      this.transaction = undefined;
+      this.onError(error);
+      // Retry a failed authorization clear only on a new response or renderer.
+      if (!this.clearing) this.start();
+    });
+  }
+
   private receive(result: WorkerResponse): void {
     if (this.disposed) return;
+    if ('type' in result && (result.type === 'decoded' || result.type === 'decode-error')) {
+      if (result.connection !== this.connection) return;
+      const pending = this.decodes.get(result.request);
+      if (!pending) {
+        if (result.type === 'decoded') this.release(result.dataset.handle);
+        return;
+      }
+      this.decodes.delete(result.request); pending.cleanup();
+      if (result.type === 'decoded') pending.resolve(result.dataset);
+      else pending.reject(new Error(result.error));
+      return;
+    }
     if ('type' in result && result.type === 'prepared') {
       const { delta } = result;
       const transaction = this.transaction;
@@ -142,21 +217,7 @@ export class ViewportStatistics {
       }
       transaction.delta = delta;
       transaction.batch = materialize(delta, this.batch);
-      // Membership has been computed before uploading. The committed filters stay live during upload.
-      const renderer = this.renderer!;
-      void renderer.apply(transaction.batch).then(() => {
-        if (this.disposed || this.transaction !== transaction) return;
-        transaction.uploaded = true;
-        this.queryCommit(transaction.version);
-      }).catch((error) => {
-        if (this.disposed || this.transaction !== transaction) return;
-        this.worker.postMessage({ type: 'discard', connection: this.connection, version: transaction.version });
-        this.transaction = undefined;
-        this.onError(error);
-        // A failed authorization clear stays hidden. Retry only on a new completed
-        // response or renderer, rather than spinning forever on a rejecting source.
-        if (!this.clearing) this.start();
-      });
+      this.upload(transaction);
       return;
     }
     if ('type' in result && result.type === 'error') {
@@ -201,6 +262,12 @@ export class ViewportStatistics {
 
   dispose(): void {
     this.renderer?.hide();
+    if (this.desired) this.release(this.desired.handle);
+    for (const [request, pending] of this.decodes) {
+      this.worker.postMessage({ type: 'cancel', connection: this.connection, request });
+      pending.cleanup(); pending.reject(new DOMException('Connection disposed.', 'AbortError'));
+    }
+    this.decodes.clear();
     this.disposed = true;
     if (this.timer) clearTimeout(this.timer);
     this.worker.onmessage = null;
