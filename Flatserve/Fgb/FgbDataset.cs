@@ -265,9 +265,10 @@ public record FgbDataset
         new ByteBuffer(_data, checked((int)featurePtr.PayloadOffset)); 
 
     private void WriteFeature(Stream output, FgbFeaturePtr featurePtr) =>
-        output.Write(_data.AsSpan(
+        output.Write(
+            _data,
             checked((int)featurePtr.Offset),
-            checked((int)featurePtr.Length)));
+            checked((int)featurePtr.Length));
 
     public void FilterTextAttribute(string attribute, string value, Stream output)
     {
