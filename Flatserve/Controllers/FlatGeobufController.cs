@@ -25,7 +25,7 @@ public class FlatGeobufController(
         if (bodyControl is not null)
             bodyControl.AllowSynchronousIO = true;
 
-        var body = new BufferedStream(
+        using var body = new BufferedStream(
             Response.BodyWriter.AsStream(leaveOpen: true),
             bufferSize: 32 * 1024);
 
@@ -33,7 +33,6 @@ public class FlatGeobufController(
         {
             Response.ContentType = "application/vnd.fgb";
             write(registry.Datasets[layerId], body);
-            
             
             return new EmptyResult();
         }
