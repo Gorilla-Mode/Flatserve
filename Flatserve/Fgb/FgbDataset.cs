@@ -167,7 +167,7 @@ public record FgbDataset
         {
             pendingFeaturePtr = pendingFeaturePtr with
             {
-                Length = checked(pendingFeaturePtr.Length + pendingFeaturePtr.Length)
+                Length = checked(pendingFeaturePtr.Length + featurePtr.Length)
             };
         }
         else
