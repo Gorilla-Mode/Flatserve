@@ -157,7 +157,7 @@ public record FgbDataset
                 checked(payloadLength + FgbFeaturePtr.LengthPrefix));
             
             var rawFeature = Feature.GetRootAsFeature(
-                new ByteBuffer(GetRawFeatureBytes(pointer)));
+                new ByteBuffer(_data, checked((int)pointer.PayloadOffset)));
 
             NetTopologySuite.Geometries.Geometry? geometry = null;
 
@@ -265,10 +265,8 @@ public record FgbDataset
         return output.ToArray();
     }
 
-    private byte[] GetRawFeatureBytes(FgbFeaturePtr featurePtr) =>
-        _data.AsSpan(
-            checked((int)featurePtr.PayloadOffset),
-            checked((int)featurePtr.PayloadLength)).ToArray(); 
+    private ByteBuffer GetRawFeatureBytes(FgbFeaturePtr featurePtr) =>
+        new ByteBuffer(_data, checked((int)featurePtr.PayloadOffset)); 
 
     private void WriteFeature(Stream output, FgbFeaturePtr featurePtr) =>
         output.Write(_data.AsSpan(
@@ -334,7 +332,7 @@ public record FgbDataset
         {
             var feature = FeatureConversions.FromByteBuffer(factory,
                 sequenceFactory,
-                new ByteBuffer(GetRawFeatureBytes(pointer)),
+                GetRawFeatureBytes(pointer),
                 _header);
 
             var attributes = feature.Attributes;
