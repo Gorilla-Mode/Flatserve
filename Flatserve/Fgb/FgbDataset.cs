@@ -94,7 +94,7 @@ public record FgbDataset
         headerBytes.CopyTo(_exportHeader, Constants.MagicBytes.Length);
     }
 
-    public ArraySegment<byte> GetBytes(Envelope bbox, Polygon allowedArea)
+    public void GetBytes(Envelope bbox, Polygon allowedArea, Stream output)
     {
         if (_spatialIndex.Length == 0)
             throw new InvalidOperationException("Spatial index is empty");
@@ -106,8 +106,8 @@ public record FgbDataset
         var started = measure ? Stopwatch.GetTimestamp() : 0;
         #endregion
         
-        using var output = new MemoryStream();
         output.Write(_exportHeader);
+        long bytesWritten = _exportHeader.Length;
         
         Stream ReadNode(ulong offset, ulong length)
         {
@@ -196,6 +196,7 @@ public record FgbDataset
                 #endregion
                 
                 WriteFeature(output, pointer);
+                bytesWritten += checked((long)pointer.Length);
                 
                 #region Metrics
                 writeUs = recordMetrics ? Stopwatch.GetElapsedTime(startWrite).TotalMicroseconds : 0;
@@ -222,9 +223,6 @@ public record FgbDataset
             }
             #endregion
         }
-
-        if(!output.TryGetBuffer(out var result))
-            throw new InvalidOperationException("Failed to get buffer from MemoryStream");
         
         #region Metrics
         var elapsed = measure ? Stopwatch.GetElapsedTime(started) : TimeSpan.Zero;
@@ -240,7 +238,7 @@ public record FgbDataset
                 SearchSetupUs = searchSetupUs,
                 CandidateCount = featureMetrics!.Count,
                 WrittenCount = written,
-                Bytes = result.Count,
+                Bytes = bytesWritten,
                 Features = featureMetrics
             });
         }
@@ -251,8 +249,6 @@ public record FgbDataset
             _logger.LogInformation("GetBytes:\n{Events}", events.ToString());
         }
         #endregion
-        
-        return result;
     }
     
     public Byte[] GetFeatureBytes(FgbFeaturePtr featurePtr)
@@ -273,21 +269,17 @@ public record FgbDataset
             checked((int)featurePtr.Offset),
             checked((int)featurePtr.Length)));
 
-    public Byte[] FilterTextAttribute(string attribute, string value)
+    public void FilterTextAttribute(string attribute, string value, Stream output)
     {
-        var features = _textIndexes.TryGetValue(attribute, out var index)
-            ? index.Get(value)
-            : Array.Empty<FgbFeaturePtr>();
-        
-        using var output = new MemoryStream();
         output.Write(_exportHeader);
+        
+        if(!_textIndexes.TryGetValue(attribute, out var index))
+            return;
 
-        foreach (var feature in features)
+        foreach (var pointer in index.Get(value))
         {
-            WriteFeature(output, feature);
+            WriteFeature(output, pointer);
         }
-
-        return output.ToArray();
     }
 
     private List<FgbFeaturePtr> GetFeaturePtrs(MemoryStream stream, BinaryReader reader)

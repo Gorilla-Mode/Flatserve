@@ -37,30 +37,53 @@ public class FlatGeobufController(
         
         return PhysicalFile(file[0], "application/json");
     }
-
-    private IActionResult Export(
-        string? layerId,
-        Func<FgbDataset, ArraySegment<byte>> query)
+    
+    private IActionResult Export(string? layerId, Action<FgbDataset, Stream> write)
     {
+        if (layerId is not null && !registry.Datasets.ContainsKey(layerId))
+            return NotFound($"Layer '{layerId}' not found.");
+
+        var bodyControl = HttpContext.Features.Get<
+            Microsoft.AspNetCore.Http.Features.IHttpBodyControlFeature>();
+
+        if (bodyControl is not null)
+            bodyControl.AllowSynchronousIO = true;
+
+        var body = Response.Body;
+
         if (layerId is not null)
         {
-            if (!registry.Datasets.TryGetValue(layerId, out var dataset))
-                return NotFound($"Layer '{layerId}' not found.");
-
-            var bytes = query(dataset);
-
-            // Wrap the existing array without copying it.
-            // ASP.NET disposes this stream after executing the response.
-            var stream = new MemoryStream(
-                bytes.Array!, bytes.Offset, bytes.Count, writable: false);
-
-            return File(stream, "application/vnd.fgb");
+            Response.ContentType = "application/vnd.fgb";
+            write(registry.Datasets[layerId], body);
+            
+            
+            return new EmptyResult();
         }
 
-        // Prepare every result before writing HTTP headers or any multipart bytes.
-        return new MultipartFgbResult(registry.Datasets
-            .Select(layer => (layer.Key, query(layer.Value)))
-            .ToArray());
+        var boundary = Guid.NewGuid().ToString("N");
+        Response.ContentType = $"multipart/mixed; boundary={boundary}";
+
+        void WriteAscii(string text) =>
+            body.Write(System.Text.Encoding.ASCII.GetBytes(text));
+
+        foreach (var (id, dataset) in registry.Datasets)
+        {
+            var disposition = new System.Net.Http.Headers.ContentDispositionHeaderValue("attachment")
+            {
+                FileName = "layer.fgb",
+                FileNameStar = id + ".fgb"
+            };
+
+            WriteAscii($"--{boundary}\r\n" +
+                       "Content-Type: application/vnd.fgb\r\n" +
+                       $"Content-Disposition: {disposition}\r\n\r\n");
+
+            write(dataset, body);
+            body.Write("\r\n"u8);
+        }
+
+        WriteAscii($"--{boundary}--\r\n");
+        return new EmptyResult();
     }
 
     [HttpGet]
@@ -92,7 +115,8 @@ public class FlatGeobufController(
 
         var bbox = new Envelope(minX, maxX, minY, maxY);
         
-        return Export(layerId, dataset => dataset.GetBytes(bbox, user.AuthPolygon));
+        return Export(layerId, (dataset, output) =>
+            dataset.GetBytes(bbox, user.AuthPolygon, output));
     }
 
     [HttpGet]
@@ -120,7 +144,8 @@ public class FlatGeobufController(
         [FromQuery, BindRequired]string value,
         [FromRoute] string? layerId = null)
     {
-        return Export(layerId, dataset => dataset.FilterTextAttribute(attribute, value));
+        return Export(layerId, (dataset, output) =>
+            dataset.FilterTextAttribute(attribute, value, output));
     }
     
     [HttpGet]
