@@ -158,34 +158,6 @@ public record FgbDataset
             }
         }
     }
-    
-    private void AppendFeature(Stream output, FgbFeaturePtr featurePtr, ref FgbFeaturePtr pendingFeaturePtr)
-    {
-        const int bufferSize = 128 * 1024;
-        
-        if(pendingFeaturePtr.Length > 0 && featurePtr.Offset == checked(pendingFeaturePtr.Offset + pendingFeaturePtr.Length))
-        {
-            pendingFeaturePtr = pendingFeaturePtr with
-            {
-                Length = checked(pendingFeaturePtr.Length + featurePtr.Length)
-            };
-        }
-        else
-        {
-            if (pendingFeaturePtr.Length > 0)
-            {
-                WriteFeature(output, pendingFeaturePtr);
-            }
-            
-            pendingFeaturePtr = featurePtr;
-        }
-
-        if (pendingFeaturePtr.Length >= bufferSize)
-        {
-            WriteFeature(output, pendingFeaturePtr);
-            pendingFeaturePtr = default;
-        }
-    }
 
     public void GetBytes(Envelope bbox, Polygon allowedArea, Stream output)
     {
@@ -230,7 +202,6 @@ public record FgbDataset
 
         var sequenceFactory = new FlatGeobufCoordinateSequenceFactory();
         var factory = new GeometryFactory(sequenceFactory);
-        FgbFeaturePtr pendingFeaturePtr = default;
         
         foreach (var intersect in intersects)
         {
@@ -289,7 +260,7 @@ public record FgbDataset
                 var startWrite = recordMetrics ? Stopwatch.GetTimestamp() : 0;
                 #endregion
                 
-                AppendFeature(output, pointer, ref pendingFeaturePtr);
+                WriteFeature(output, pointer);
                 bytesWritten += checked((long)pointer.Length);
                 
                 #region Metrics
@@ -316,11 +287,6 @@ public record FgbDataset
                 });
             }
             #endregion
-        }
-
-        if (pendingFeaturePtr.Length > 0)
-        {
-            WriteFeature(output, pendingFeaturePtr);
         }
         
         #region Metrics
