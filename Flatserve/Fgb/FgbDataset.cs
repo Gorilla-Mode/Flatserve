@@ -93,6 +93,71 @@ public record FgbDataset
         Constants.MagicBytes.CopyTo(_exportHeader, 0);
         headerBytes.CopyTo(_exportHeader, Constants.MagicBytes.Length);
     }
+    
+    private ByteBuffer GetRawFeatureBytes(FgbFeaturePtr featurePtr) =>
+        new ByteBuffer(_data, checked((int)featurePtr.PayloadOffset)); 
+
+    private void WriteFeature(Stream output, FgbFeaturePtr featurePtr) =>
+        output.Write(
+            _data,
+            checked((int)featurePtr.Offset),
+            checked((int)featurePtr.Length));
+    
+    private List<FgbFeaturePtr> GetFeaturePtrs(MemoryStream stream, BinaryReader reader)
+    {
+        List<FgbFeaturePtr> fgbFeaturePtrs = new List<FgbFeaturePtr>();
+        
+        while (stream.Position < stream.Length)
+        {
+            ulong offset = Convert.ToUInt64(stream.Position);
+            ulong payloadLength = reader.ReadUInt32();
+
+            fgbFeaturePtrs.Add(new FgbFeaturePtr(
+                offset,
+                checked(payloadLength + FgbFeaturePtr.LengthPrefix)));
+
+            stream.Position += Convert.ToInt64(payloadLength);
+
+        }
+        
+        return fgbFeaturePtrs;
+    }
+
+    private void AddToTextIndex(string attribute, string value, FgbFeaturePtr featurePtr)
+    {
+        if (!_textIndexes.TryGetValue(attribute, out var index))
+        {
+            index = new HashIndex();
+            _textIndexes.Add(attribute, index);
+        }
+
+        index.Add(value, featurePtr);
+    }
+
+    private void BuildTextIndex(string attribute)
+    {
+        // Preserve the built index even when this layer contains no string values.
+        _textIndexes.TryAdd(attribute, new HashIndex());
+        var sequenceFactory = new FlatGeobufCoordinateSequenceFactory();
+        var factory = new GeometryFactory(sequenceFactory);
+        
+        foreach (var pointer in FeaturePtrs)
+        {
+            var feature = FeatureConversions.FromByteBuffer(factory,
+                sequenceFactory,
+                GetRawFeatureBytes(pointer),
+                _header);
+
+            var attributes = feature.Attributes;
+            
+            if (attributes is not null &&
+                attributes.Exists(attribute) &&
+                attributes[attribute] is string value)
+            {
+                AddToTextIndex(attribute, value, pointer);
+            }
+        }
+    }
 
     public void GetBytes(Envelope bbox, Polygon allowedArea, Stream output)
     {
@@ -261,14 +326,6 @@ public record FgbDataset
         return output.ToArray();
     }
 
-    private ByteBuffer GetRawFeatureBytes(FgbFeaturePtr featurePtr) =>
-        new ByteBuffer(_data, checked((int)featurePtr.PayloadOffset)); 
-
-    private void WriteFeature(Stream output, FgbFeaturePtr featurePtr) =>
-        output.Write(_data.AsSpan(
-            checked((int)featurePtr.Offset),
-            checked((int)featurePtr.Length)));
-
     public void FilterTextAttribute(string attribute, string value, Stream output)
     {
         output.Write(_exportHeader);
@@ -281,60 +338,5 @@ public record FgbDataset
             WriteFeature(output, pointer);
         }
     }
-
-    private List<FgbFeaturePtr> GetFeaturePtrs(MemoryStream stream, BinaryReader reader)
-    {
-        List<FgbFeaturePtr> fgbFeaturePtrs = new List<FgbFeaturePtr>();
-        
-        while (stream.Position < stream.Length)
-        {
-            ulong offset = Convert.ToUInt64(stream.Position);
-            ulong payloadLength = reader.ReadUInt32();
-
-            fgbFeaturePtrs.Add(new FgbFeaturePtr(
-                offset,
-                checked(payloadLength + FgbFeaturePtr.LengthPrefix)));
-
-            stream.Position += Convert.ToInt64(payloadLength);
-
-        }
-        
-        return fgbFeaturePtrs;
-    }
-
-    private void AddToTextIndex(string attribute, string value, FgbFeaturePtr featurePtr)
-    {
-        if (!_textIndexes.TryGetValue(attribute, out var index))
-        {
-            index = new HashIndex();
-            _textIndexes.Add(attribute, index);
-        }
-
-        index.Add(value, featurePtr);
-    }
-
-    private void BuildTextIndex(string attribute)
-    {
-        // Preserve the built index even when this layer contains no string values.
-        _textIndexes.TryAdd(attribute, new HashIndex());
-        var sequenceFactory = new FlatGeobufCoordinateSequenceFactory();
-        var factory = new GeometryFactory(sequenceFactory);
-        
-        foreach (var pointer in FeaturePtrs)
-        {
-            var feature = FeatureConversions.FromByteBuffer(factory,
-                sequenceFactory,
-                GetRawFeatureBytes(pointer),
-                _header);
-
-            var attributes = feature.Attributes;
-            
-            if (attributes is not null &&
-                attributes.Exists(attribute) &&
-                attributes[attribute] is string value)
-            {
-                AddToTextIndex(attribute, value, pointer);
-            }
-        }
-    }
+    
 }
