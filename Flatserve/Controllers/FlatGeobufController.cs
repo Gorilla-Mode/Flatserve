@@ -14,6 +14,13 @@ public class FlatGeobufController(
     IWebHostEnvironment environment
     ) : ControllerBase
 {
+    private const int Lod2MinZoom = 9;
+    private const int Lod1MinZoom = 11;
+    private const int Lod0MinZoom = 12;
+    internal const string LodCutoffsHeader = "X-Flatserve-Lod-Cutoffs";
+    private static readonly string LodCutoffsValue =
+        FormattableString.Invariant($"{Lod2MinZoom},{Lod1MinZoom},{Lod0MinZoom}");
+
     private IActionResult Export(
     string? layerId,
     Action<FgbDataset, Stream> write,
@@ -24,15 +31,20 @@ public class FlatGeobufController(
 
         (FgbDataset Dataset, FgbDetail Level) SelectLod(FgbLayer layer) => zoom switch
         {
-            < 8 when layer.Lod3 is { } lod3 => (lod3, FgbDetail.LOD3),
-            >= 8 and < 11 when layer.Lod2 is { } lod2 => (lod2, FgbDetail.LOD2),
-            >= 11 and < 12 when layer.Lod1 is { } lod1 => (lod1, FgbDetail.LOD1),
+            < Lod2MinZoom when layer.Lod3 is { } lod3 => (lod3, FgbDetail.LOD3),
+            >= Lod2MinZoom and < Lod1MinZoom when layer.Lod2 is { } lod2 => (lod2, FgbDetail.LOD2),
+            >= Lod1MinZoom and < Lod0MinZoom when layer.Lod1 is { } lod1 => (lod1, FgbDetail.LOD1),
             _ => (layer.Lod0, FgbDetail.LOD0)
         };
+
+        if (zoom.HasValue)
+            Response.Headers[LodCutoffsHeader] = LodCutoffsValue;
 
         var bodyControl = HttpContext.Features.Get<
             Microsoft.AspNetCore.Http.Features.IHttpBodyControlFeature>();
 
+        
+        
         if (bodyControl is not null)
             bodyControl.AllowSynchronousIO = true;
 
