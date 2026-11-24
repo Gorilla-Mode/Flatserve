@@ -14,10 +14,21 @@ public class FlatGeobufController(
     IWebHostEnvironment environment
     ) : ControllerBase
 {
-    private IActionResult Export(string? layerId, Action<FgbLayer, Stream> write)
+    private IActionResult Export(
+    string? layerId,
+    Action<FgbDataset, Stream> write,
+    int? zoom = null)
     {
         if (layerId is not null && !registry.Datasets.ContainsKey(layerId))
             return NotFound($"Layer '{layerId}' not found.");
+
+        (FgbDataset Dataset, int Level) SelectLod(FgbLayer layer) => zoom switch
+        {
+            < 6 when layer.Lod1 is { } lod1 => (lod1, 1),
+            >= 6 and < 10 when layer.Lod2 is { } lod2 => (lod2, 2),
+            >= 10 and < 14 when layer.Lod3 is { } lod3 => (lod3, 3),
+            _ => (layer.Lod0, 0)
+        };
 
         var bodyControl = HttpContext.Features.Get<
             Microsoft.AspNetCore.Http.Features.IHttpBodyControlFeature>();
@@ -31,9 +42,10 @@ public class FlatGeobufController(
 
         if (layerId is not null)
         {
+            var (dataset, level) = SelectLod(registry.Datasets[layerId]);
             Response.ContentType = "application/vnd.fgb";
-            write(registry.Datasets[layerId], body);
-            
+            Response.Headers["X-Flatserve-Lod"] = level.ToString();
+            write(dataset, body);
             return new EmptyResult();
         }
 
@@ -43,8 +55,9 @@ public class FlatGeobufController(
         void WriteAscii(string text) =>
             body.Write(System.Text.Encoding.ASCII.GetBytes(text));
 
-        foreach (var (id, dataset) in registry.Datasets)
+        foreach (var (id, layer) in registry.Datasets)
         {
+            var (dataset, level) = SelectLod(layer);
             var disposition = new System.Net.Http.Headers.ContentDispositionHeaderValue("attachment")
             {
                 FileName = "layer.fgb",
@@ -53,7 +66,8 @@ public class FlatGeobufController(
 
             WriteAscii($"--{boundary}\r\n" +
                        "Content-Type: application/vnd.fgb\r\n" +
-                       $"Content-Disposition: {disposition}\r\n\r\n");
+                       $"Content-Disposition: {disposition}\r\n" +
+                       $"X-Flatserve-Lod: {level}\r\n\r\n");
 
             write(dataset, body);
             body.Write("\r\n"u8);
@@ -61,19 +75,6 @@ public class FlatGeobufController(
 
         WriteAscii($"--{boundary}--\r\n");
         return new EmptyResult();
-    }
-
-    private FgbDataset PickLod(int zoom, FgbLayer layer)
-    {
-        var lod = zoom switch
-        {
-            < 6 => layer.Lod1,
-            < 10 => layer.Lod2,
-            < 14 => layer.Lod3,
-            _ => layer.Lod0,
-        } ?? layer.Lod0;
-
-        return lod;
     }
     
     [HttpGet("indexes")]
@@ -130,8 +131,9 @@ public class FlatGeobufController(
 
         var bbox = new Envelope(minX, maxX, minY, maxY);
         
-        return Export(layerId, (layer, output) =>
-            PickLod(zoom, layer).GetBytes(bbox, user.AuthPolygon, output));
+        return Export(layerId, (dataset, output) =>
+            dataset.GetBytes(bbox, user.AuthPolygon, output), zoom);
+
     }
 
     [HttpGet]
@@ -160,7 +162,8 @@ public class FlatGeobufController(
         [FromRoute] string? layerId = null)
     {
         return Export(layerId, (dataset, output) =>
-            dataset.Lod0.FilterTextAttribute(attribute, value, output)); 
+            dataset.FilterTextAttribute(attribute, value, output));
+ 
     }
     
     [HttpGet]
