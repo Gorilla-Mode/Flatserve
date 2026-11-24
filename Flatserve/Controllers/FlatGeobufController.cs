@@ -163,7 +163,6 @@ public class FlatGeobufController(
     {
         return Export(layerId, (dataset, output) =>
             dataset.FilterTextAttribute(attribute, value, output));
- 
     }
     
     [HttpGet]
