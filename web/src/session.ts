@@ -21,9 +21,9 @@ interface Observer {
 
 // Match the collection API's zoom cutoffs for coverage reuse.
 function zoomBand(zoom: number): number {
-  if (zoom < 6) return 0;
-  if (zoom < 10) return 1;
-  return zoom < 14 ? 2 : 3;
+  if (zoom < 8) return 0;
+  if (zoom < 11) return 1;
+  return zoom < 12 ? 2 : 3;
 }
 
 /** One connection's coverage and request lifetimes; no stale request may publish data. */

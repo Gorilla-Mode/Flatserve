@@ -607,6 +607,20 @@ function pendingReader() {
   return { calls, read };
 }
 
+it.each([8, 11, 12])('refreshes covered bounds in both directions at zoom %s', async (cutoff) => {
+  const read = vi.fn(async (_url: URL) => [station('current')]);
+  const session = norwaySession('https://example.org', observers(), read);
+  const bounds = area();
+  await session.setBounds(bounds, cutoff - 0.75);
+  await session.setBounds(bounds, cutoff - 0.25);
+  await session.setBounds(bounds, cutoff);
+  await session.setBounds(bounds, cutoff + 0.25);
+  await session.setBounds(bounds, cutoff - 0.25);
+  expect(read.mock.calls.map(([url]) => Number(url.searchParams.get('zoom'))))
+    .toEqual([cutoff - 1, cutoff, cutoff - 1]);
+  session.dispose();
+});
+
 it('refreshes covered bounds on a zoom cutoff and ignores a superseded LOD response', async () => {
   const observer = observers();
   const { read, calls } = pendingReader();
@@ -621,14 +635,14 @@ it('refreshes covered bounds on a zoom cutoff and ignores a superseded LOD respo
   expect(calls[1].url.searchParams.get('minX')).toBe('-3');
   calls[1].resolve([station('initial')]);
   await initial;
-  await session.setBounds(area(1, 9), 9.95);
+  await session.setBounds(area(1, 9), 10.95);
   expect(calls).toHaveLength(2);
 
-  const superseded = session.setBounds(area(1, 9), 10);
-  expect(calls[2].url.searchParams.get('zoom')).toBe('10');
-  const latest = session.setBounds(area(2, 8), 14);
+  const superseded = session.setBounds(area(1, 9), 11);
+  expect(calls[2].url.searchParams.get('zoom')).toBe('11');
+  const latest = session.setBounds(area(2, 8), 12);
   expect(calls[2].options.signal.aborted).toBe(true);
-  expect(calls[3].url.searchParams.get('zoom')).toBe('14');
+  expect(calls[3].url.searchParams.get('zoom')).toBe('12');
   calls[3].resolve([station('latest')]);
   await latest;
   calls[2].resolve([station('stale')]);
