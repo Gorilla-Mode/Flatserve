@@ -24,7 +24,7 @@ the folder and indexed text attributes in `Flatserve/appsettings.json`, for exam
 {
   "Fgb": {
     "Directory": "test/fgb",
-    "TextIndexes": ["brannvesen", "name"]
+    "TextIndexes": ["type", "status"]
   }
 }
 ```
@@ -35,21 +35,24 @@ These examples assume the API is running at `http://localhost:5220`. Responses a
 binary and are saved to files by curl.
 
 Get features within a bounding box around Kristiansand centre. Coordinates use
-longitude (X) and latitude (Y) in degrees for the current dataset (EPSG:4326):
+longitude (X) and latitude (Y) in degrees for the current dataset (EPSG:4326).
+This bounding box returns no features from the tracked shooting-range dataset.
+The required `zoom` parameter selects the level of detail; `12` requests the
+full-detail layer.
 
 ```sh
 curl --fail \
-  "http://localhost:5220/fgb/collection?userId=2&minX=7.95&minY=58.10&maxX=8.08&maxY=58.20" \
+  "http://localhost:5220/fgb/collection?userId=2&minX=7.95&minY=58.10&maxX=8.08&maxY=58.20&zoom=12" \
   -H "Accept: multipart/mixed" \
   --dump-header collection.headers \
   --output collection.multipart
 ```
 
-Get the feature at index `0`:
+Get the feature at index `0` from the shooting-range layer:
 
 ```sh
 curl --fail \
-  "http://localhost:5220/fgb/feature/0" \
+  "http://localhost:5220/fgb/Forurensning_0000_Norge_3035_Skytefelt_GML.SkyteOg_vingsfelt/feature/0" \
   -H "Accept: application/vnd.fgb" \
   --output feature-0.bin
 ```

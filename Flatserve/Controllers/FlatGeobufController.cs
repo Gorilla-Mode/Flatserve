@@ -42,8 +42,6 @@ public class FlatGeobufController(
 
         var bodyControl = HttpContext.Features.Get<
             Microsoft.AspNetCore.Http.Features.IHttpBodyControlFeature>();
-
-        
         
         if (bodyControl is not null)
             bodyControl.AllowSynchronousIO = true;
