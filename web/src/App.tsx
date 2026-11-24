@@ -37,7 +37,7 @@ export function App() {
   const map = useRef<MapLibreMap | null>(null);
   const session = useRef<DatasetSession | null>(null);
   const statistics = useRef<ViewportStatistics | null>(null);
-  const viewRef = useRef<ViewState>({ batch: prepareBatch([], 0), counts: {}, membership: null });
+  const viewRef = useRef<ViewState>({ batch: prepareBatch([], 0), counts: {}, membership: null, lodLevels: [] });
   const hiddenRef = useRef(new Set<string>());
   const styleRenderer = useRef<ReturnType<typeof renderStyledLayers> | null>(null);
   const [stylesheet, setStylesheet] = useState<{ connection: NonNullable<typeof connection>; prepared: PreparedStylesheet } | null>(null);
@@ -236,7 +236,7 @@ export function App() {
 
   useEffect(() => {
     if (!connection) return;
-    viewRef.current = { batch: prepareBatch([], 0), counts: {}, membership: null };
+    viewRef.current = { batch: prepareBatch([], 0), counts: {}, membership: null, lodLevels: [] };
     setView(viewRef.current);
     const viewport = new ViewportStatistics(connection.id, (state) => {
       viewRef.current = state;
@@ -248,7 +248,7 @@ export function App() {
     setHiddenLayers(new Set());
     let fitted = false;
     const current = new DatasetSession(connection.url, {
-      onDataset: (handle) => viewport.setData(handle),
+      onDataset: (handle, lodLevels) => viewport.setData(handle, lodLevels),
       onInvalidate: () => viewport.invalidate(),
       onStatus: setStatus,
       onDiscovery: setDiscovery,
@@ -266,7 +266,7 @@ export function App() {
       },
     }, viewport);
     session.current = current;
-    void current.discover();
+    void current.discover(map.current?.getZoom());
     return () => {
       current.dispose();
       viewport.dispose();
@@ -316,12 +316,13 @@ export function App() {
     const bounds = updateArea();
     statistics.current?.setView(bounds, bboxActive, !!selection, true);
     // Apply all query settings atomically and invalidate incompatible coverage/work.
-    void current.setTextFilter(selection ? { attribute: selectedAttribute, value: selectedValue! } : null, bounds, bufferEnabled);
+    void current.setTextFilter(selection ? { attribute: selectedAttribute, value: selectedValue! } : null,
+      bounds, bufferEnabled, instance.getZoom());
     const update = (final = false) => {
       frame = undefined;
       const bounds = updateArea();
       statistics.current?.setView(bounds, bboxActive, !!selection, final);
-      void current.setBounds(bounds);
+      void current.setBounds(bounds, instance.getZoom());
     };
     const schedule = () => {
       if (frame === undefined) frame = requestAnimationFrame(() => update());
@@ -483,11 +484,14 @@ export function App() {
           {connection && !indexStatus.loading && !indexStatus.error && !indexes.length && <small>No text indexes are available.</small>}
           {indexStatus.error && <small className="error" role="alert">Indexes: {indexStatus.error} <button type="button" onClick={retryIndexes}>Retry indexes</button></small>}
           {discovery.error && <small className="error" role="alert">Layers: {discovery.error} <button type="button" onClick={() => {
-            void session.current?.discover();
+            void session.current?.discover(map.current?.getZoom());
           }}>Retry layers</button></small>}
         </form>
       </section>
-      <div ref={mapContainer} className="map" aria-label="Map of FGB layers" />
+      <div className="map">
+        <div ref={mapContainer} className="map-canvas" aria-label="Map of FGB layers" />
+        <MapReadout map={mapReady ? map.current : null} lodLevels={view.lodLevels} />
+      </div>
       <ConnectionDialog open={connectionOpen} initialUrl={connection?.url ?? 'http://localhost:5220'}
         onClose={() => setConnectionOpen(false)} onConnect={(url) => {
           if (connection) setSelectedUser(null);
@@ -504,6 +508,18 @@ export function App() {
         }} />
     </main>
   );
+}
+
+function MapReadout({ map, lodLevels }: { map: MapLibreMap | null; lodLevels: number[] }) {
+  const [zoom, setZoom] = useState('—');
+  useEffect(() => {
+    if (!map) return;
+    const update = () => setZoom(map.getZoom().toFixed(2));
+    update();
+    map.on('zoom', update);
+    return () => { map.off('zoom', update); };
+  }, [map]);
+  return <div className="map-readout">Zoom {zoom} · LOD {lodLevels.join(', ') || '—'}</div>;
 }
 
 function ConnectionDialog({ open, initialUrl, onClose, onConnect }: {

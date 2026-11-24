@@ -11,6 +11,7 @@ export interface ViewState {
   batch: DataBatch;
   counts: Record<string, number>;
   membership: Record<string, number[]> | null;
+  lodLevels: number[];
 }
 export interface StatisticsWorker {
   onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null;
@@ -25,7 +26,7 @@ export interface SnapshotRenderer {
 /** One transaction in flight; complete replacements coalesce against the acknowledged snapshot. */
 export class ViewportStatistics {
   private batch: DataBatch = { version: 0, groups: new Map() };
-  private state: ViewState = { batch: this.batch, counts: {}, membership: null };
+  private state: ViewState = { batch: this.batch, counts: {}, membership: null, lodLevels: [] };
   private bounds: Bounds[] = [];
   private bbox = false;
   private text = false;
@@ -41,8 +42,8 @@ export class ViewportStatistics {
   private lastSent = -Infinity;
   private timer?: ReturnType<typeof setTimeout>;
   private disposed = false;
-  private desired?: { handle: number; version: number; epoch: number };
-  private transaction?: { version: number; epoch: number; delta?: SnapshotDelta; batch?: DataBatch; uploaded?: boolean; refreshedCamera?: boolean };
+  private desired?: { handle: number; version: number; epoch: number; lodLevels: number[] };
+  private transaction?: { version: number; epoch: number; lodLevels: number[]; delta?: SnapshotDelta; batch?: DataBatch; uploaded?: boolean; refreshedCamera?: boolean };
   private renderer?: SnapshotRenderer;
   private blocked = false;
   private clearing = false;
@@ -106,10 +107,10 @@ export class ViewportStatistics {
     if (!this.disposed) this.worker.postMessage({ type: 'release', connection: this.connection, handle });
   }
 
-  setData(handle: number): void {
+  setData(handle: number, lodLevels: number[] = []): void {
     if (this.disposed) return;
     if (this.desired) this.release(this.desired.handle);
-    this.desired = { handle, version: ++this.version, epoch: this.epoch };
+    this.desired = { handle, version: ++this.version, epoch: this.epoch, lodLevels };
     this.start();
   }
 
@@ -121,7 +122,7 @@ export class ViewportStatistics {
     this.clearing = true;
     if (this.desired) this.release(this.desired.handle);
     this.desired = undefined;
-    this.state = { ...this.state, counts: {}, membership: this.bbox ? {} : null };
+    this.state = { ...this.state, counts: {}, membership: this.bbox ? {} : null, lodLevels: [] };
     this.publish(this.state);
     this.start();
   }
@@ -132,11 +133,11 @@ export class ViewportStatistics {
   }
   private start(): void {
     if (this.disposed || this.blocked || !this.renderer || this.transaction) return;
-    const desired = this.clearing ? { handle: null, version: ++this.version, epoch: this.epoch } : this.desired;
+    const desired = this.clearing ? { handle: null, version: ++this.version, epoch: this.epoch, lodLevels: [] } : this.desired;
     if (!desired) return;
     if (desired.version <= this.batch.version) desired.version = ++this.version;
     if (!this.clearing) this.desired = undefined;
-    this.transaction = { version: desired.version, epoch: desired.epoch };
+    this.transaction = { version: desired.version, epoch: desired.epoch, lodLevels: desired.lodLevels };
     this.worker.postMessage({ type: 'data', connection: this.connection, version: desired.version,
       handle: desired.handle, view: this.query(desired.version) });
   }
@@ -242,7 +243,7 @@ export class ViewportStatistics {
       this.transaction = undefined;
       if (transaction.epoch === this.epoch) {
         this.clearing = false;
-        this.state = { batch: this.batch, counts: result.counts, membership: result.membership };
+        this.state = { batch: this.batch, counts: result.counts, membership: result.membership, lodLevels: transaction.lodLevels };
         this.publish(this.state);
       }
       this.inFlight = undefined;
@@ -254,7 +255,7 @@ export class ViewportStatistics {
     this.inFlight = undefined;
     if (!this.clearing && result.sequence >= this.minimumSequence && result.version === this.batch.version
       && request.bbox === this.bbox && request.text === this.text) {
-      this.state = { batch: this.batch, counts: result.counts, membership: result.membership };
+      this.state = { ...this.state, batch: this.batch, counts: result.counts, membership: result.membership };
       this.publish(this.state);
     }
     this.flush();

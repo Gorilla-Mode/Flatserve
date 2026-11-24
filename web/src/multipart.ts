@@ -1,4 +1,4 @@
-export interface FgbPart { id: string; bytes: Uint8Array<ArrayBuffer> }
+export interface FgbPart { id: string; bytes: Uint8Array<ArrayBuffer>; lod?: number }
 
 /** Buffer multipart bodies as binary data; never convert FGB payloads to text. */
 export async function readFgbParts(response: Response, signal: AbortSignal, yieldControl?: () => Promise<void>): Promise<FgbPart[]> {
@@ -52,8 +52,10 @@ export async function readFgbParts(response: Response, signal: AbortSignal, yiel
     if (!id || ids.has(id)) throw new Error('Invalid or duplicate multipart layer ID.');
     ids.add(id);
     const end = await find(next, headerEnd + separator.length);
+    const lod = headers.get('x-flatserve-lod');
     // Copy to a fresh, aligned buffer for FlatBuffers typed-array access.
-    parts.push({ id, bytes: bytes.slice(headerEnd + separator.length, end) });
+    parts.push({ id, bytes: bytes.slice(headerEnd + separator.length, end),
+      ...(lod !== null && /^[0-3]$/.test(lod) ? { lod: Number(lod) } : {}) });
     position = end + 2;
   }
   if (!parts.length) throw new Error('The API returned no FGB layers.');

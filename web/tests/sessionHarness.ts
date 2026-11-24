@@ -1,5 +1,5 @@
 import type { Feature } from 'geojson';
-import type { BinaryResponse, DecodeOptions, FgbLayer } from '../src/api';
+import type { BinaryResponse, DecodeOptions, FgbLayer, LodCutoffs } from '../src/api';
 import { DatasetSession as Session } from '../src/session';
 
 /** Adapt readable feature fixtures to opaque handles for the coverage/lifetime tests.
@@ -15,7 +15,7 @@ export class DatasetSession extends Session {
     onPrefetchCoverage?: ConstructorParameters<typeof Session>[1]['onPrefetchCoverage'];
     onLayers?: (layers: FgbLayer[]) => void;
     onTiming?: DecodeOptions['onTiming'];
-  }, read: (url: URL, options: DecodeOptions) => Promise<Feature[]>) {
+  }, read: (url: URL, options: DecodeOptions) => Promise<Feature[]>, readCutoffs?: () => LodCutoffs) {
     const bodies = new Map<ArrayBuffer, { features: Feature[]; layers: FgbLayer[] }>();
     const datasets = new Map<number, Feature[]>();
     let next = 0, populated = false;
@@ -51,7 +51,7 @@ export class DatasetSession extends Session {
         onTiming: (timing) => { if (!options.signal.aborted) observer.onTiming?.(timing); } });
       const buffer = new ArrayBuffer(0);
       bodies.set(buffer, { features, layers });
-      return { buffer, contentType: '', url: url.href, httpMs: null, started: 0, headersReceived: 0 };
+      return { buffer, contentType: '', lodCutoffs: readCutoffs?.(), url: url.href, httpMs: null, started: 0, headersReceived: 0 };
     });
   }
 }

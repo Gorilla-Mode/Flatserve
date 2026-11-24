@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Flatserve;
+using Flatserve.Controllers;
 using Flatserve.Fgb;
 using Flatserve.User;
 
@@ -17,7 +18,8 @@ builder.Services.AddControllers();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
-    policy.AllowAnyOrigin().WithMethods("GET").WithHeaders("Accept")));
+    policy.AllowAnyOrigin().WithMethods("GET").WithHeaders("Accept")
+        .WithExposedHeaders(FlatGeobufController.LodCutoffsHeader)));
 builder.Services.AddSingleton<FgbDatasetRegistry>();
 
 builder.Services.AddSingleton<UserCollection>();

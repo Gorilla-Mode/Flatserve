@@ -24,10 +24,13 @@ export function chunked(bytes: Uint8Array, size = 7): Response {
   }));
 }
 
-export function multipartEncoded(layers: { id: string; bytes: Uint8Array }[]): Uint8Array {
+type MultipartLayer = { id: string; bytes: Uint8Array; lod?: number };
+
+export function multipartEncoded(layers: MultipartLayer[]): Uint8Array {
   const text = (value: string) => new TextEncoder().encode(value);
-  const chunks = layers.flatMap(({ id, bytes }) => [
-    text(`--fgb-test\r\nContent-Type: application/vnd.fgb\r\nContent-Disposition: attachment; filename="layer.fgb"; filename*=utf-8''${encodeURIComponent(id)}.fgb\r\n\r\n`),
+  const chunks = layers.flatMap(({ id, bytes, lod }) => [
+    text(`--fgb-test\r\nContent-Type: application/vnd.fgb\r\nContent-Disposition: attachment; filename="layer.fgb"; filename*=utf-8''${encodeURIComponent(id)}.fgb\r\n` +
+      (lod === undefined ? '' : `X-Flatserve-Lod: ${lod}\r\n`) + '\r\n'),
     bytes, text('\r\n'),
   ]);
   chunks.push(text('--fgb-test--\r\n'));
@@ -37,7 +40,7 @@ export function multipartEncoded(layers: { id: string; bytes: Uint8Array }[]): U
   return result;
 }
 
-export function multipartResponse(layers: { id: string; bytes: Uint8Array }[], size = 7): Response {
+export function multipartResponse(layers: MultipartLayer[], size = 7): Response {
   const response = chunked(multipartEncoded(layers), size);
   response.headers.set('Content-Type', 'multipart/mixed; boundary="fgb-test"');
   return response;

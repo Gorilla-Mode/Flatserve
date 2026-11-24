@@ -14,14 +14,37 @@ public class FlatGeobufController(
     IWebHostEnvironment environment
     ) : ControllerBase
 {
-    private IActionResult Export(string? layerId, Action<FgbDataset, Stream> write)
+    private const int Lod2MinZoom = 9;
+    private const int Lod1MinZoom = 11;
+    private const int Lod0MinZoom = 12;
+    internal const string LodCutoffsHeader = "X-Flatserve-Lod-Cutoffs";
+    private static readonly string LodCutoffsValue =
+        FormattableString.Invariant($"{Lod2MinZoom},{Lod1MinZoom},{Lod0MinZoom}");
+
+    private IActionResult Export(
+    string? layerId,
+    Action<FgbDataset, Stream> write,
+    int? zoom = null)
     {
         if (layerId is not null && !registry.Datasets.ContainsKey(layerId))
             return NotFound($"Layer '{layerId}' not found.");
 
+        (FgbDataset Dataset, FgbDetail Level) SelectLod(FgbLayer layer) => zoom switch
+        {
+            < Lod2MinZoom when layer.Lod3 is { } lod3 => (lod3, FgbDetail.LOD3),
+            >= Lod2MinZoom and < Lod1MinZoom when layer.Lod2 is { } lod2 => (lod2, FgbDetail.LOD2),
+            >= Lod1MinZoom and < Lod0MinZoom when layer.Lod1 is { } lod1 => (lod1, FgbDetail.LOD1),
+            _ => (layer.Lod0, FgbDetail.LOD0)
+        };
+
+        if (zoom.HasValue)
+            Response.Headers[LodCutoffsHeader] = LodCutoffsValue;
+
         var bodyControl = HttpContext.Features.Get<
             Microsoft.AspNetCore.Http.Features.IHttpBodyControlFeature>();
 
+        
+        
         if (bodyControl is not null)
             bodyControl.AllowSynchronousIO = true;
 
@@ -31,9 +54,10 @@ public class FlatGeobufController(
 
         if (layerId is not null)
         {
+            var (dataset, level) = SelectLod(registry.Datasets[layerId]);
             Response.ContentType = "application/vnd.fgb";
-            write(registry.Datasets[layerId], body);
-            
+            Response.Headers["X-Flatserve-Lod"] = level.ToString();
+            write(dataset, body);
             return new EmptyResult();
         }
 
@@ -43,8 +67,9 @@ public class FlatGeobufController(
         void WriteAscii(string text) =>
             body.Write(System.Text.Encoding.ASCII.GetBytes(text));
 
-        foreach (var (id, dataset) in registry.Datasets)
+        foreach (var (id, layer) in registry.Datasets)
         {
+            var (dataset, level) = SelectLod(layer);
             var disposition = new System.Net.Http.Headers.ContentDispositionHeaderValue("attachment")
             {
                 FileName = "layer.fgb",
@@ -53,7 +78,8 @@ public class FlatGeobufController(
 
             WriteAscii($"--{boundary}\r\n" +
                        "Content-Type: application/vnd.fgb\r\n" +
-                       $"Content-Disposition: {disposition}\r\n\r\n");
+                       $"Content-Disposition: {disposition}\r\n" +
+                       $"X-Flatserve-Lod: {(int)level}\r\n\r\n");
 
             write(dataset, body);
             body.Write("\r\n"u8);
@@ -66,7 +92,7 @@ public class FlatGeobufController(
     [HttpGet("indexes")]
     public IActionResult Indexes() => Ok(new
     {
-        layers = registry.Datasets.Select(layer => new { id = layer.Key, indexes = layer.Value.TextIndexesMeta })
+        layers = registry.Datasets.Select(layer => new { id = layer.Key, indexes = layer.Value.Lod0.TextIndexesMeta })
     });
 
     [HttpGet("style")]
@@ -96,6 +122,7 @@ public class FlatGeobufController(
         [FromQuery, BindRequired] double minY,
         [FromQuery, BindRequired] double maxX,
         [FromQuery, BindRequired] double maxY,
+        [FromQuery, BindRequired] int zoom,
         [FromRoute] string? layerId = null)
     {
         if (!double.IsFinite(minX) || !double.IsFinite(minY) ||
@@ -117,7 +144,8 @@ public class FlatGeobufController(
         var bbox = new Envelope(minX, maxX, minY, maxY);
         
         return Export(layerId, (dataset, output) =>
-            dataset.GetBytes(bbox, user.AuthPolygon, output));
+            dataset.GetBytes(bbox, user.AuthPolygon, output), zoom);
+
     }
 
     [HttpGet]
@@ -131,10 +159,10 @@ public class FlatGeobufController(
         if (!registry.Datasets.TryGetValue(layerId ?? registry.Datasets.Keys.Single(), out var fgbDataset))
             return NotFound($"Layer '{layerId}' not found.");
 
-        if (featureIndex < 0 || featureIndex >= fgbDataset.FeaturePtrs.Count)
+        if (featureIndex < 0 || featureIndex >= fgbDataset.Lod0.FeaturePtrs.Count)
             return NotFound("Feature index is out of bounds.");
 
-        return File(fgbDataset.GetFeatureBytes(fgbDataset.FeaturePtrs[featureIndex]), "application/vnd.fgb");
+        return File(fgbDataset.Lod0.GetFeatureBytes(fgbDataset.Lod0.FeaturePtrs[featureIndex]), "application/vnd.fgb");
     }
 
     [HttpGet]

@@ -426,7 +426,7 @@ for (const action of ['change selection', 'toggle off', 'reconnect'] as const) {
       if (new URL(route.request().url()).searchParams.get('value') !== 'Oslo brann- og redningsetat') return route.continue();
       delayedUrl = route.request().url();
       // Empty results make an incorrectly accepted late response observable.
-      const response = await route.fetch({ url: 'http://localhost:5221/fgb/collection?userId=2&minX=-1&minY=-1&maxX=1&maxY=1' });
+      const response = await route.fetch({ url: 'http://localhost:5221/fgb/collection?userId=2&minX=-1&minY=-1&maxX=1&maxY=1&zoom=14' });
       await held;
       await route.fulfill({ response });
       finished = true;
@@ -532,7 +532,7 @@ test('shows empty results, reports request errors, and retries', async ({ page }
       failures++;
       await route.fulfill({ status: 503, body: 'Unavailable', headers: { 'Access-Control-Allow-Origin': '*' } });
     } else {
-      const response = await route.fetch({ url: 'http://localhost:5221/fgb/collection?userId=2&minX=-1&minY=-1&maxX=1&maxY=1' });
+      const response = await route.fetch({ url: 'http://localhost:5221/fgb/collection?userId=2&minX=-1&minY=-1&maxX=1&maxY=1&zoom=14' });
       await route.fulfill({ response });
     }
   });
@@ -822,7 +822,7 @@ for (const useBbox of [false, true]) {
       if (!delayNext) return route.continue();
       delayNext = false;
       delayedUrl = route.request().url();
-      const response = await route.fetch({ url: 'http://localhost:5221/fgb/collection?userId=2&minX=-1&minY=-1&maxX=1&maxY=1' });
+      const response = await route.fetch({ url: 'http://localhost:5221/fgb/collection?userId=2&minX=-1&minY=-1&maxX=1&maxY=1&zoom=14' });
       await held;
       await route.fulfill({ response });
       finished = true;

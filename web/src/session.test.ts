@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Feature } from 'geojson';
-import type { DecodeOptions, HeaderMeta, RequestTiming } from './api';
+import type { DecodeOptions, HeaderMeta, LodCutoffs, RequestTiming } from './api';
 import { DatasetSession } from '../tests/sessionHarness';
 import { expandBounds, viewportBounds, WORLD } from './bounds';
 import { station } from '../tests/fixtures';
@@ -379,7 +379,7 @@ describe('buffered live updates', () => {
     const session = norwaySession('https://example.org', observer, read);
     await session.setFilter('', area(), false);
     expect(Object.fromEntries(read.mock.calls[0][0].searchParams)).toEqual({
-      userId: '2', minX: '0', minY: '50', maxX: '10', maxY: '60',
+      userId: '2', minX: '0', minY: '50', maxX: '10', maxY: '60', zoom: '14',
     });
     await session.setBounds(area(7, 9));
     expect(read).toHaveBeenCalledTimes(1);
@@ -454,7 +454,7 @@ describe('buffered live updates', () => {
     await session.setBounds(area());
     const stringify = vi.spyOn(JSON, 'stringify');
     expect(Object.fromEntries(read.mock.calls[0][0].searchParams)).toEqual({
-      userId: '2', minX: '-3', minY: '47', maxX: '13', maxY: '63',
+      userId: '2', minX: '-3', minY: '47', maxX: '13', maxY: '63', zoom: '14',
     });
     expect(observer.onFeatures.mock.lastCall?.[0]).toEqual([station('inside', 8), station('buffer', 12), station('outside', 20)]);
     await session.setBounds(area(1, 11));
@@ -607,6 +607,88 @@ function pendingReader() {
   return { calls, read };
 }
 
+const vestlandCutoffs = [9, 11, 12] as const;
+
+it.each(vestlandCutoffs)('refreshes covered bounds in both directions at advertised zoom %s', async (cutoff) => {
+  const read = vi.fn(async (_url: URL) => [station('current')]);
+  const session = norwaySession('https://example.org', observers(), read, () => vestlandCutoffs);
+  const bounds = area();
+  await session.setBounds(bounds, cutoff - 0.75);
+  await session.setBounds(bounds, cutoff - 0.25);
+  await session.setBounds(bounds, cutoff);
+  await session.setBounds(bounds, cutoff + 0.25);
+  await session.setBounds(bounds, cutoff - 0.25);
+  expect(read.mock.calls.map(([url]) => Number(url.searchParams.get('zoom'))))
+    .toEqual([cutoff - 1, cutoff, cutoff - 1]);
+  session.dispose();
+});
+
+it.each([
+  { cutoffs: [9, 11, 12] as const, requests: [7, 9] },
+  { cutoffs: [8, 10, 11] as const, requests: [7, 8] },
+  { cutoffs: undefined, requests: [7, 8, 9] },
+])('reuses coverage according to the response policy ($cutoffs)', async ({ cutoffs, requests }) => {
+  const read = vi.fn(async (_url: URL) => [station('current')]);
+  const session = norwaySession('https://example.org', observers(), read, cutoffs ? () => cutoffs : undefined);
+  for (const zoom of [7, 7.5, 8, 8.5, 9, 9.5]) await session.setBounds(area(), zoom);
+  expect(read.mock.calls.map(([url]) => Number(url.searchParams.get('zoom')))).toEqual(requests);
+  session.dispose();
+});
+
+it('refreshes covered bounds on a zoom cutoff and ignores a superseded LOD response', async () => {
+  const observer = observers();
+  const { read, calls } = pendingReader();
+  const session = norwaySession('https://example.org', observer, read, () => vestlandCutoffs);
+  const discovery = session.discover(9.75);
+  expect(calls[0].url.searchParams.get('zoom')).toBe('9');
+  calls[0].resolve([]);
+  await discovery;
+
+  const initial = session.setBounds(area(), 9.75);
+  expect(calls[1].url.searchParams.get('zoom')).toBe('9');
+  expect(calls[1].url.searchParams.get('minX')).toBe('-3');
+  calls[1].resolve([station('initial')]);
+  await initial;
+  await session.setBounds(area(1, 9), 10.95);
+  expect(calls).toHaveLength(2);
+
+  const superseded = session.setBounds(area(1, 9), 11);
+  expect(calls[2].url.searchParams.get('zoom')).toBe('11');
+  const latest = session.setBounds(area(2, 8), 12);
+  expect(calls[2].options.signal.aborted).toBe(true);
+  expect(calls[3].url.searchParams.get('zoom')).toBe('12');
+  calls[3].resolve([station('latest')]);
+  await latest;
+  calls[2].resolve([station('stale')]);
+  await superseded;
+  expect(observer.onFeatures.mock.calls.map(([features]) => features[0].properties.brannvesen))
+    .toEqual(['initial', 'latest']);
+  session.dispose();
+});
+
+it('rechecks the requested zoom against newly advertised cutoffs before publishing', async () => {
+  let cutoffs: LodCutoffs = [8, 11, 12];
+  const observer = observers();
+  const { read, calls } = pendingReader();
+  const session = norwaySession('https://example.org', observer, read, () => cutoffs);
+  const initial = session.setBounds(area(), 8);
+  calls[0].resolve([station('initial')]);
+  await initial;
+
+  const outdated = session.setBounds(area(25, 35), 8);
+  const latest = session.setBounds(area(25, 35), 9);
+  expect(calls).toHaveLength(2);
+  cutoffs = vestlandCutoffs;
+  calls[1].resolve([station('outdated')]);
+  await vi.waitFor(() => expect(calls).toHaveLength(3));
+  expect(calls[2].url.searchParams.get('zoom')).toBe('9');
+  calls[2].resolve([station('latest')]);
+  await Promise.all([outdated, latest]);
+  expect(observer.onFeatures.mock.calls.map(([features]) => features[0].properties.brannvesen))
+    .toEqual(['initial', 'latest']);
+  session.dispose();
+});
+
 describe('user selection', () => {
   it('allows only discovery before selection, even after setting a filter or retrying', async () => {
     const observer = observers();
@@ -634,8 +716,8 @@ describe('user selection', () => {
     expect(observer.onDiscovery.mock.lastCall?.[0].error).toBe('Offline');
     await session.discover();
     expect(read.mock.calls.map(([url]) => Object.fromEntries(url.searchParams))).toEqual([
-      { userId: '2', ...Object.fromEntries(Object.entries(WORLD).map(([key, value]) => [key, String(value)])) },
-      { userId: '2', ...Object.fromEntries(Object.entries(WORLD).map(([key, value]) => [key, String(value)])) },
+      { userId: '2', zoom: '14', ...Object.fromEntries(Object.entries(WORLD).map(([key, value]) => [key, String(value)])) },
+      { userId: '2', zoom: '14', ...Object.fromEntries(Object.entries(WORLD).map(([key, value]) => [key, String(value)])) },
     ]);
     expect(observer.onValues).toHaveBeenCalledExactlyOnceWith(['A', 'B']);
     expect(observer.onFeatures).not.toHaveBeenCalled();
@@ -725,7 +807,7 @@ describe('user selection', () => {
       && url.search === '?attribute=brannvesen&value=Oslo' && options.cache === 'no-store')).toBe(true);
     await session.setFilter('');
     expect(Object.fromEntries(read.mock.lastCall?.[0].searchParams)).toEqual({
-      userId: '2', minX: '7', minY: '50', maxX: '9', maxY: '60',
+      userId: '2', minX: '7', minY: '50', maxX: '9', maxY: '60', zoom: '14',
     });
   });
 });
@@ -879,7 +961,7 @@ describe('connection sessions', () => {
     await session.setFilter('', [bbox]);
     expect(read).toHaveBeenCalledTimes(before + 1);
     const expected = expandBounds([bbox])[0];
-    expect(Object.fromEntries(read.mock.lastCall![0].searchParams)).toEqual({ userId: '2',
+    expect(Object.fromEntries(read.mock.lastCall![0].searchParams)).toEqual({ userId: '2', zoom: '14',
       ...Object.fromEntries(Object.entries(expected).map(([key, value]) => [key, String(value)])) });
     expect(observer.onStatus.mock.lastCall?.[0].loading).toBe(false);
   });
