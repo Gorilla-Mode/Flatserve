@@ -6,7 +6,7 @@ import type { DatasetDecoder } from './snapshotWorker';
 
 interface Observer {
   /** Ownership of this worker handle passes to the viewport. */
-  onDataset: (handle: number) => void;
+  onDataset: (handle: number, lodLevels: number[]) => void;
   onInvalidate: () => void;
   onStatus: (status: { loading: boolean; error: string | null }) => void;
   onHeader: (header: HeaderMeta) => void;
@@ -17,6 +17,13 @@ interface Observer {
   onPrefetchCoverage?: (bounds: Bounds[] | undefined) => void;
   onTiming?: (timing: RequestTiming) => void;
   onLayers?: (layers: FgbLayer[]) => void;
+}
+
+// Match the collection API's zoom cutoffs for coverage reuse.
+function zoomBand(zoom: number): number {
+  if (zoom < 6) return 0;
+  if (zoom < 10) return 1;
+  return zoom < 14 ? 2 : 3;
 }
 
 /** One connection's coverage and request lifetimes; no stale request may publish data. */
@@ -30,6 +37,7 @@ export class DatasetSession {
   private attribute = 'brannvesen';
   private bufferEnabled = true;
   private bounds: Bounds[] = [];
+  private zoom = 14;
   private coverage?: Bounds[];
   private prefetchCoverage?: Bounds[];
   private queryAnchor?: Bounds[];
@@ -44,7 +52,7 @@ export class DatasetSession {
     private readonly read = fetchBinary,
   ) {}
 
-  async discover(): Promise<void> {
+  async discover(zoom = 14): Promise<void> {
     if (this.disposed) return;
     this.discoveryRequest?.abort();
     const request = new AbortController();
@@ -52,7 +60,7 @@ export class DatasetSession {
     const current = () => !this.disposed && !request.signal.aborted;
     this.observer.onDiscovery({ loading: true, error: null });
     try {
-      const response = await this.read(collectionUrl(this.base, WORLD, 2), { signal: request.signal });
+      const response = await this.read(collectionUrl(this.base, WORLD, 2, zoom), { signal: request.signal });
       if (!current()) return;
       const dataset = await this.decoder.decode([response], request.signal, true);
       try {
@@ -75,10 +83,12 @@ export class DatasetSession {
     }
   }
 
-  setBounds(bounds: Bounds[]): Promise<void> {
+  setBounds(bounds: Bounds[], zoom = this.zoom): Promise<void> {
+    const changedBand = zoomBand(this.zoom) !== zoomBand(zoom);
     this.bounds = bounds;
+    this.zoom = zoom;
     if (this.disposed || this.selection !== null) return Promise.resolve();
-    return this.schedule();
+    return changedBand ? this.refresh() : this.schedule();
   }
 
   setFilter(selection: string | null, bounds = this.bounds, bufferEnabled = this.bufferEnabled, attribute = 'brannvesen'): Promise<void> {
@@ -86,11 +96,12 @@ export class DatasetSession {
   }
 
   setTextFilter(filter: { attribute: string; value: string } | null, bounds = this.bounds,
-    bufferEnabled = this.bufferEnabled): Promise<void> {
+    bufferEnabled = this.bufferEnabled, zoom = this.zoom): Promise<void> {
     this.selection = filter?.value ?? null;
     this.attribute = filter?.attribute ?? '';
     this.bounds = bounds;
     this.bufferEnabled = bufferEnabled;
+    this.zoom = zoom;
     return this.refresh();
   }
 
@@ -150,7 +161,7 @@ export class DatasetSession {
     const target = selection !== null ? JSON.stringify([this.attribute, selection]) : JSON.stringify(requestBounds);
     if ((selection === null && !requestBounds.length) || target === this.failedTarget) return Promise.resolve();
     const urls = selection !== null ? [filterUrl(this.base, selection, this.attribute)]
-      : requestBounds.map((bounds) => collectionUrl(this.base, bounds, userId));
+      : requestBounds.map((bounds) => collectionUrl(this.base, bounds, userId, this.zoom));
     const generation = this.generation;
     const request = new AbortController();
     this.viewRequest = request;
@@ -184,7 +195,9 @@ export class DatasetSession {
         this.observer.onPrefetchCoverage?.(prefetchBounds);
       }
       this.failedTarget = undefined;
-      this.observer.onDataset(dataset.handle);
+      const lodLevels = [...new Set(dataset.layers.flatMap(({ lod }) => lod === undefined ? [] : [lod]))]
+        .sort((a, b) => a - b);
+      this.observer.onDataset(dataset.handle, lodLevels);
       this.notifyStatus({ loading: false, error: null });
     } catch (error) {
       if (!current()) return;

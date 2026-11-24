@@ -21,6 +21,15 @@ describe('multipart FGB decoding', () => {
     expect(onBatch.mock.lastCall?.[0]).toEqual(features);
   });
 
+  it('reports the served LOD per layer, including fallback and empty layers', async () => {
+    const [road, east, empty] = layers();
+    const onLayer = vi.fn();
+    await decodeResponse(multipartResponse([{ ...road, lod: 2 }, east, { ...empty, lod: 0 }]),
+      { signal: signal(), onLayer });
+    expect(onLayer.mock.calls.map(([layer]) => [layer.id, layer.lod]))
+      .toEqual([['map.Roads', 2], ['Øst', undefined], ['Empty', 0]]);
+  });
+
   it.each(['truncated', 'duplicate', 'invalid-fgb', 'missing-boundary', 'wrong-type'])(
     'rejects %s responses', async (failure) => {
       let bytes = multipartEncoded(failure === 'duplicate' ? [layers()[0], layers()[0]] : layers());

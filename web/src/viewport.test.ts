@@ -40,12 +40,12 @@ function harness() {
     expect(queue.length).toBe(0);
   };
   let next = 0;
-  const setData = async (features: Feature[]) => {
+  const setData = async (features: Feature[], lodLevels?: number[]) => {
     const bytes = features.length ? encoded(features) : headerOnly(encoded());
     const response = await engine.receive({ type: 'decode', connection: 1, request: ++next, discovery: false,
       responses: [{ buffer: bytes.slice().buffer, contentType: '', url: '', started: 0, headersReceived: 0, httpMs: null }] });
     if (!response || !('type' in response) || response.type !== 'decoded') throw new Error('Fixture decoding failed.');
-    client.setData(response.dataset.handle);
+    client.setData(response.dataset.handle, lodLevels);
   };
   return { setData, client, renderer, worker, publish, messages, queue, drain, onError };
 }
@@ -53,12 +53,14 @@ function harness() {
 it('prepares completed responses in the worker and commits only after renderer completion', async () => {
   const h = harness(); await h.drain();
   const upload = deferred(); h.renderer.apply.mockReturnValueOnce(upload.promise);
-  await h.setData([station('a'), station('outside', 50)]);
+  await h.setData([station('a'), station('outside', 50)], [0, 2]);
   await h.drain();
   expect(h.publish).not.toHaveBeenCalled();
   expect(h.messages.some((m) => m.type === 'commit')).toBe(false);
   upload.resolve(); await h.drain();
-  expect(h.publish.mock.lastCall![0]).toMatchObject({ counts: { dataset: 1 }, batch: { version: 1 } });
+  expect(h.publish.mock.lastCall![0]).toMatchObject({ counts: { dataset: 1 }, batch: { version: 1 }, lodLevels: [0, 2] });
+  h.client.invalidate();
+  expect(h.publish.mock.lastCall![0].lodLevels).toEqual([]);
   h.client.dispose();
 });
 

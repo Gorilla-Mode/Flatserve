@@ -7,7 +7,7 @@ export { decodeResponse } from './decode';
 
 export type { HeaderMeta };
 
-export interface FgbLayer { id: string; header: HeaderMeta }
+export interface FgbLayer { id: string; header: HeaderMeta; lod?: number }
 export type LayerFeature = Feature & { fgbLayerId?: string };
 export const featureLayer = (feature: Feature): string => (feature as LayerFeature).fgbLayerId ?? 'dataset';
 
@@ -58,10 +58,11 @@ export function normalizeApiUrl(input: string): string {
   return url.href;
 }
 
-export function collectionUrl(base: string, bounds: Bounds, userId: number): URL {
+export function collectionUrl(base: string, bounds: Bounds, userId: number, zoom = 14): URL {
   const url = new URL('fgb/collection', normalizeApiUrl(base));
   url.searchParams.set('userId', String(userId));
   for (const [key, value] of Object.entries(bounds)) url.searchParams.set(key, String(value));
+  url.searchParams.set('zoom', String(Math.floor(zoom)));
   return url;
 }
 

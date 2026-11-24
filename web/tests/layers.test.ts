@@ -99,7 +99,7 @@ async function parts(path: string) {
   return results;
 }
 
-const collection = '/fgb/collection?userId=2&minX=4&minY=58&maxX=32&maxY=72';
+const collection = '/fgb/collection?userId=2&minX=4&minY=58&maxX=32&maxY=72&zoom=14';
 
 it('reports only built indexes and their actual distinct values per layer', async () => {
   const response = await fetch(base + '/fgb/indexes');
@@ -129,7 +129,7 @@ it('filters and authorizes each layer independently, including empty results', a
   expect((await parts(filter)).map((layer) => layer.features.length)).toEqual([7, 0]);
   expect((await parts(filter.replace('brannvesen&', 'department&'))).map((layer) => layer.features.length)).toEqual([0, 7]);
   expect((await parts(collection.replace('userId=2', 'userId=1'))).map((layer) => layer.features.length)).toEqual([10, 10]);
-  expect((await parts('/fgb/collection?userId=2&minX=-1&minY=-1&maxX=1&maxY=1'))
+  expect((await parts('/fgb/collection?userId=2&minX=-1&minY=-1&maxX=1&maxY=1&zoom=14'))
     .map((layer) => layer.features.length)).toEqual([0, 0]);
 });
 
@@ -140,7 +140,7 @@ it('supports layer routes and rejects unknown layers, invalid queries, and ambig
   for (const [path, status] of [
     ['/fgb/missing/feature/0', 404], ['/fgb/a/feature/639', 404],
     ['/fgb/feature/0', 400], ['/fgb/collection', 400],
-    ['/fgb/collection?userId=2&minX=20&minY=0&maxX=10&maxY=10', 400],
+    ['/fgb/collection?userId=2&minX=20&minY=0&maxX=10&maxY=10&zoom=14', 400],
     [collection.replace('/collection', '/missing/collection'), 404],
   ] as const) expect((await fetch(base + path)).status).toBe(status);
 });

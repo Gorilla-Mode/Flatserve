@@ -19,7 +19,10 @@ export async function decodeResponse(response: Response, options: DecodeOptions)
       const features = await decodeResponse(new Response(part.bytes), {
         ...options,
         onLayer: undefined,
-        onHeader: (header) => { onHeader?.(header); options.onLayer?.({ id: part.id, header }); },
+        onHeader: (header) => {
+          onHeader?.(header);
+          options.onLayer?.({ id: part.id, header, ...(part.lod === undefined ? {} : { lod: part.lod }) });
+        },
         onBatch: onBatch ? (batch) => onBatch([...all, ...tag(batch)]) : undefined,
       });
       for (const [index, feature] of features.entries()) {
