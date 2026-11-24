@@ -2,8 +2,8 @@ namespace Flatserve.Fgb;
 
 public sealed class FgbDatasetRegistry
 {
-    private readonly Dictionary<string, FgbDataset> _datasets = new(StringComparer.OrdinalIgnoreCase);
-    public IReadOnlyDictionary<string, FgbDataset> Datasets => _datasets;
+    private readonly Dictionary<string, FgbLayer> _datasets = new(StringComparer.OrdinalIgnoreCase);
+    public IReadOnlyDictionary<string, FgbLayer> Datasets => _datasets;
 
     public FgbDatasetRegistry(IConfiguration configuration, IWebHostEnvironment environment, ILoggerFactory loggerFactory, MetricsWriter metrics)
     {
@@ -22,19 +22,28 @@ public sealed class FgbDatasetRegistry
 
         var attributes = configuration.GetSection("Fgb:TextIndexes").Get<string[]>();
         
+        var logger = loggerFactory.CreateLogger<FgbDataset>();
+
+        FgbDataset Load(string path) => new(path, logger, metrics, attributes);
+
         foreach (var path in paths)
         {
-            var id = Path.GetFileNameWithoutExtension(path);
-            if (string.IsNullOrWhiteSpace(id) || _datasets.ContainsKey(id))
-                throw new InvalidOperationException($"Invalid or duplicate FGB layer ID: '{id}'.");
-            try
+            var layerId = Path.GetFileNameWithoutExtension(path);
+
+            if (Path.GetExtension(layerId) is ".lod1" or ".lod2" or ".lod3")
+                continue;
+
+            FgbDataset? LoadLod(int level)
             {
-                _datasets.Add(id, new FgbDataset(path, loggerFactory.CreateLogger<FgbDataset>(), metrics, attributes));
+                var lodPath = Path.ChangeExtension(path, $".lod{level}.fgb");
+                return File.Exists(lodPath) ? Load(lodPath) : null;
             }
-            catch (Exception exception)
-            {
-                throw new InvalidOperationException($"Unable to load FGB layer '{id}' from '{path}'.", exception);
-            }
+
+            _datasets.Add(layerId, new FgbLayer(
+                Load(path),
+                LoadLod(1),
+                LoadLod(2),
+                LoadLod(3)));
         }
     }
 }
