@@ -1,31 +1,32 @@
 @Flatserve_HostAddress = http://localhost:5220
+@layerId = Forurensning_0000_Norge_3035_Skytefelt_GML.SkyteOg_vingsfelt
 
 ### All features
-GET {{Flatserve_HostAddress}}/fgb/collection?userId=2&minX=4&minY=58&maxX=32&maxY=72
+GET {{Flatserve_HostAddress}}/fgb/collection?userId=2&minX=4&minY=58&maxX=32&maxY=72&zoom=12
 Accept: multipart/mixed
 
-### Kristiansand centre
-GET {{Flatserve_HostAddress}}/fgb/collection?userId=2&minX=7.95&minY=58.10&maxX=8.08&maxY=58.20
+### Kristiansand centre (no features in the tracked dataset)
+GET {{Flatserve_HostAddress}}/fgb/collection?userId=2&minX=7.95&minY=58.10&maxX=8.08&maxY=58.20&zoom=12
 Accept: multipart/mixed
 
-### Greater Kristiansand
-GET {{Flatserve_HostAddress}}/fgb/collection?userId=2&minX=7.75&minY=58.0&maxX=8.30&maxY=58.35
+### Greater Kristiansand (no features in the tracked dataset)
+GET {{Flatserve_HostAddress}}/fgb/collection?userId=2&minX=7.75&minY=58.0&maxX=8.30&maxY=58.35&zoom=12
 Accept: multipart/mixed
 
-### Oslo
-GET {{Flatserve_HostAddress}}/fgb/collection?userId=2&minX=10.5&minY=59.8&maxX=10.95&maxY=60.05
+### Oslo (no features in the tracked dataset)
+GET {{Flatserve_HostAddress}}/fgb/collection?userId=2&minX=10.5&minY=59.8&maxX=10.95&maxY=60.05&zoom=12
 Accept: multipart/mixed
 
 ### Single feature
-GET {{Flatserve_HostAddress}}/fgb/feature/0
+GET {{Flatserve_HostAddress}}/fgb/{{layerId}}/feature/0
 Accept: application/vnd.fgb
 
-### Filter by Brannvesen oslo
-GET {{Flatserve_HostAddress}}/fgb/filter?value=Oslo%20brann-%20og%20redningsetat&attribute=brannvesen
+### Filter by in-use status
+GET {{Flatserve_HostAddress}}/fgb/filter?value=brukes&attribute=status
 Accept: multipart/mixed
 
-### Filter by Brannvesen kristiansand
-GET {{Flatserve_HostAddress}}/fgb/filter?value=Kristiansandsregionen%20BR&attribute=brannvesen
+### Filter by closed status
+GET {{Flatserve_HostAddress}}/fgb/filter?value=nedlagt&attribute=status
 Accept: multipart/mixed
 
 ### Auth Polygon
@@ -33,6 +34,5 @@ GET {{Flatserve_HostAddress}}/fgb/auth-polygon/2
 Accept: application/geo+json
 
 ### Single layer (ordinary FGB response)
-@layerId = Samfunnssikkerhet_0000_Norge_25833_Brannstasjoner_GML
-GET {{Flatserve_HostAddress}}/fgb/{{layerId}}/collection?userId=2&minX=4&minY=58&maxX=32&maxY=72
+GET {{Flatserve_HostAddress}}/fgb/{{layerId}}/collection?userId=2&minX=4&minY=58&maxX=32&maxY=72&zoom=12
 Accept: application/vnd.fgb
