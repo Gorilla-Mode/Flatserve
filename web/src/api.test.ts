@@ -1,9 +1,23 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { authorizedAreaUrl, collectionUrl, decodeResponse, fetchAuthorizedArea, fetchFeatures, filterUrl, httpDuration, normalizeApiUrl } from './api';
+import { authorizedAreaUrl, collectionUrl, decodeResponse, fetchAuthorizedArea, fetchBinary, fetchFeatures, filterUrl, httpDuration, normalizeApiUrl } from './api';
 import { WORLD } from './bounds';
 import { chunked, encoded, headerOnly } from '../tests/fixtures';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+it.each([
+  { header: '9, 11,12', cutoffs: [9, 11, 12] },
+  { header: '9,11,11', cutoffs: undefined },
+  { header: '9,,12', cutoffs: undefined },
+  { header: null, cutoffs: undefined },
+])('reads collection cutoff metadata from $header', async ({ header, cutoffs }) => {
+  const headers = header === null ? undefined : { 'X-Flatserve-Lod-Cutoffs': header };
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('FlatGeobuf body', { headers })));
+  const response = await fetchBinary(collectionUrl('https://example.org', WORLD, 2), {
+    signal: new AbortController().signal,
+  });
+  expect(response.lodCutoffs).toEqual(cutoffs);
+});
 
 const polygon = {
   type: 'Feature', properties: { userId: 0 },

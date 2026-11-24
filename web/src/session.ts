@@ -1,5 +1,5 @@
 import { collectionUrl, errorMessage, fetchBinary, filterUrl } from './api';
-import type { FgbLayer, HeaderMeta, RequestTiming } from './api';
+import type { FgbLayer, HeaderMeta, LodCutoffs, RequestTiming } from './api';
 import { containsBounds, containsPrefetchBounds, directionalBuffers, WORLD } from './bounds';
 import type { Bounds } from './bounds';
 import type { DatasetDecoder } from './snapshotWorker';
@@ -19,11 +19,9 @@ interface Observer {
   onLayers?: (layers: FgbLayer[]) => void;
 }
 
-// Match the collection API's zoom cutoffs for coverage reuse.
-function zoomBand(zoom: number): number {
-  if (zoom < 8) return 0;
-  if (zoom < 11) return 1;
-  return zoom < 12 ? 2 : 3;
+function zoomBand(zoom: number, cutoffs?: LodCutoffs): number {
+  const wholeZoom = Math.floor(zoom);
+  return cutoffs?.findIndex((cutoff) => wholeZoom < cutoff) ?? wholeZoom;
 }
 
 /** One connection's coverage and request lifetimes; no stale request may publish data. */
@@ -38,6 +36,7 @@ export class DatasetSession {
   private bufferEnabled = true;
   private bounds: Bounds[] = [];
   private zoom = 14;
+  private lodCutoffs?: LodCutoffs;
   private coverage?: Bounds[];
   private prefetchCoverage?: Bounds[];
   private queryAnchor?: Bounds[];
@@ -84,7 +83,7 @@ export class DatasetSession {
   }
 
   setBounds(bounds: Bounds[], zoom = this.zoom): Promise<void> {
-    const changedBand = zoomBand(this.zoom) !== zoomBand(zoom);
+    const changedBand = zoomBand(this.zoom, this.lodCutoffs) !== zoomBand(zoom, this.lodCutoffs);
     this.bounds = bounds;
     this.zoom = zoom;
     if (this.disposed || this.selection !== null) return Promise.resolve();
@@ -160,17 +159,18 @@ export class DatasetSession {
     const prefetchBounds = buffers?.prefetch;
     const target = selection !== null ? JSON.stringify([this.attribute, selection]) : JSON.stringify(requestBounds);
     if ((selection === null && !requestBounds.length) || target === this.failedTarget) return Promise.resolve();
+    const requestZoom = this.zoom;
     const urls = selection !== null ? [filterUrl(this.base, selection, this.attribute)]
-      : requestBounds.map((bounds) => collectionUrl(this.base, bounds, userId, this.zoom));
+      : requestBounds.map((bounds) => collectionUrl(this.base, bounds, userId, requestZoom));
     const generation = this.generation;
     const request = new AbortController();
     this.viewRequest = request;
-    this.pending = this.load(urls, queryBounds, requestBounds, prefetchBounds, target, selection, generation, request);
+    this.pending = this.load(urls, queryBounds, requestBounds, prefetchBounds, target, selection, requestZoom, generation, request);
     return this.pending;
   }
 
   private async load(urls: URL[], queryBounds: Bounds[], requestBounds: Bounds[], prefetchBounds: Bounds[] | undefined,
-    target: string, selection: string | null,
+    target: string, selection: string | null, requestZoom: number,
     generation: number, request: AbortController): Promise<void> {
     const current = () => !this.disposed && generation === this.generation && !request.signal.aborted;
     this.notifyStatus({ loading: true, error: null });
@@ -188,6 +188,13 @@ export class DatasetSession {
       if (!current()) { this.decoder.release(dataset.handle); return; }
       for (const timing of dataset.timings) this.observer.onTiming?.(timing);
       if (selection === null) {
+        const cutoffs = responses[0]?.lodCutoffs;
+        const advertised = cutoffs?.join(',');
+        this.lodCutoffs = responses.every((response) => response.lodCutoffs?.join(',') === advertised) ? cutoffs : undefined;
+        if (zoomBand(requestZoom, this.lodCutoffs) !== zoomBand(this.zoom, this.lodCutoffs)) {
+          this.decoder.release(dataset.handle);
+          return this.refresh();
+        }
         this.coverage = requestBounds;
         this.prefetchCoverage = prefetchBounds;
         this.queryAnchor = queryBounds;

@@ -193,16 +193,26 @@ export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'The request failed.';
 }
 
+export type LodCutoffs = readonly [number, number, number];
 /** Binary body and absolute timestamps are safe to transfer across performance contexts. */
 export interface BinaryResponse {
   buffer: ArrayBuffer;
   contentType: string;
+  lodCutoffs?: LodCutoffs;
   url: string;
   started: number;
   headersReceived: number;
   httpMs: number | null;
 }
 export interface DownloadOptions { signal: AbortSignal; cache?: RequestCache }
+
+function parseLodCutoffs(header: string | null): LodCutoffs | undefined {
+  const values = header?.split(',').map((value) => value.trim());
+  if (values?.length !== 3 || !values.every((value) => /^-?\d+$/.test(value))) return;
+  const [first, second, third] = values.map(Number);
+  if ([first, second, third].every(Number.isSafeInteger) && first < second && second < third)
+    return [first, second, third];
+}
 
 export async function fetchBinary(url: URL, options: DownloadOptions): Promise<BinaryResponse> {
   options.signal.throwIfAborted();
@@ -222,7 +232,8 @@ export async function fetchBinary(url: URL, options: DownloadOptions): Promise<B
     const bytes = await readResponseBytes(response, options.signal);
     const finished = performance.now();
     options.signal.throwIfAborted();
-    return { buffer: bytes.buffer, contentType: response.headers.get('content-type') ?? '', url: requestUrl,
+    return { buffer: bytes.buffer, contentType: response.headers.get('content-type') ?? '',
+      lodCutoffs: parseLodCutoffs(response.headers.get('x-flatserve-lod-cutoffs')), url: requestUrl,
       started: performance.timeOrigin + started, headersReceived: performance.timeOrigin + headersReceived,
       httpMs: attribution.ambiguous ? null : httpDuration(
         performance.getEntriesByName(requestUrl, 'resource'), requestUrl, started, finished, earlier),

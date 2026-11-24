@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Feature } from 'geojson';
-import type { DecodeOptions, HeaderMeta, RequestTiming } from './api';
+import type { DecodeOptions, HeaderMeta, LodCutoffs, RequestTiming } from './api';
 import { DatasetSession } from '../tests/sessionHarness';
 import { expandBounds, viewportBounds, WORLD } from './bounds';
 import { station } from '../tests/fixtures';
@@ -607,9 +607,11 @@ function pendingReader() {
   return { calls, read };
 }
 
-it.each([8, 11, 12])('refreshes covered bounds in both directions at zoom %s', async (cutoff) => {
+const vestlandCutoffs = [9, 11, 12] as const;
+
+it.each(vestlandCutoffs)('refreshes covered bounds in both directions at advertised zoom %s', async (cutoff) => {
   const read = vi.fn(async (_url: URL) => [station('current')]);
-  const session = norwaySession('https://example.org', observers(), read);
+  const session = norwaySession('https://example.org', observers(), read, () => vestlandCutoffs);
   const bounds = area();
   await session.setBounds(bounds, cutoff - 0.75);
   await session.setBounds(bounds, cutoff - 0.25);
@@ -621,10 +623,22 @@ it.each([8, 11, 12])('refreshes covered bounds in both directions at zoom %s', a
   session.dispose();
 });
 
+it.each([
+  { cutoffs: [9, 11, 12] as const, requests: [7, 9] },
+  { cutoffs: [8, 10, 11] as const, requests: [7, 8] },
+  { cutoffs: undefined, requests: [7, 8, 9] },
+])('reuses coverage according to the response policy ($cutoffs)', async ({ cutoffs, requests }) => {
+  const read = vi.fn(async (_url: URL) => [station('current')]);
+  const session = norwaySession('https://example.org', observers(), read, cutoffs ? () => cutoffs : undefined);
+  for (const zoom of [7, 7.5, 8, 8.5, 9, 9.5]) await session.setBounds(area(), zoom);
+  expect(read.mock.calls.map(([url]) => Number(url.searchParams.get('zoom')))).toEqual(requests);
+  session.dispose();
+});
+
 it('refreshes covered bounds on a zoom cutoff and ignores a superseded LOD response', async () => {
   const observer = observers();
   const { read, calls } = pendingReader();
-  const session = norwaySession('https://example.org', observer, read);
+  const session = norwaySession('https://example.org', observer, read, () => vestlandCutoffs);
   const discovery = session.discover(9.75);
   expect(calls[0].url.searchParams.get('zoom')).toBe('9');
   calls[0].resolve([]);
@@ -647,6 +661,29 @@ it('refreshes covered bounds on a zoom cutoff and ignores a superseded LOD respo
   await latest;
   calls[2].resolve([station('stale')]);
   await superseded;
+  expect(observer.onFeatures.mock.calls.map(([features]) => features[0].properties.brannvesen))
+    .toEqual(['initial', 'latest']);
+  session.dispose();
+});
+
+it('rechecks the requested zoom against newly advertised cutoffs before publishing', async () => {
+  let cutoffs: LodCutoffs = [8, 11, 12];
+  const observer = observers();
+  const { read, calls } = pendingReader();
+  const session = norwaySession('https://example.org', observer, read, () => cutoffs);
+  const initial = session.setBounds(area(), 8);
+  calls[0].resolve([station('initial')]);
+  await initial;
+
+  const outdated = session.setBounds(area(25, 35), 8);
+  const latest = session.setBounds(area(25, 35), 9);
+  expect(calls).toHaveLength(2);
+  cutoffs = vestlandCutoffs;
+  calls[1].resolve([station('outdated')]);
+  await vi.waitFor(() => expect(calls).toHaveLength(3));
+  expect(calls[2].url.searchParams.get('zoom')).toBe('9');
+  calls[2].resolve([station('latest')]);
+  await Promise.all([outdated, latest]);
   expect(observer.onFeatures.mock.calls.map(([features]) => features[0].properties.brannvesen))
     .toEqual(['initial', 'latest']);
   session.dispose();
