@@ -22,12 +22,12 @@ public class FlatGeobufController(
         if (layerId is not null && !registry.Datasets.ContainsKey(layerId))
             return NotFound($"Layer '{layerId}' not found.");
 
-        (FgbDataset Dataset, int Level) SelectLod(FgbLayer layer) => zoom switch
+        (FgbDataset Dataset, FgbDetail Level) SelectLod(FgbLayer layer) => zoom switch
         {
-            < 6 when layer.Lod1 is { } lod1 => (lod1, 1),
-            >= 6 and < 10 when layer.Lod2 is { } lod2 => (lod2, 2),
-            >= 10 and < 14 when layer.Lod3 is { } lod3 => (lod3, 3),
-            _ => (layer.Lod0, 0)
+            < 8 when layer.Lod3 is { } lod3 => (lod3, FgbDetail.LOD3),
+            >= 8 and < 11 when layer.Lod2 is { } lod2 => (lod2, FgbDetail.LOD2),
+            >= 11 and < 12 when layer.Lod1 is { } lod1 => (lod1, FgbDetail.LOD1),
+            _ => (layer.Lod0, FgbDetail.LOD0)
         };
 
         var bodyControl = HttpContext.Features.Get<
@@ -67,7 +67,7 @@ public class FlatGeobufController(
             WriteAscii($"--{boundary}\r\n" +
                        "Content-Type: application/vnd.fgb\r\n" +
                        $"Content-Disposition: {disposition}\r\n" +
-                       $"X-Flatserve-Lod: {level}\r\n\r\n");
+                       $"X-Flatserve-Lod: {(int)level}\r\n\r\n");
 
             write(dataset, body);
             body.Write("\r\n"u8);
