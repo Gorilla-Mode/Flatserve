@@ -251,7 +251,7 @@ func request(ctx context.Context, client *http.Client, base string, bounds bbox,
 	s.started++
 	s.Unlock()
 	start := time.Now()
-	address := fmt.Sprintf("%s/fgb/collection?userId=2&minX=%.8f&minY=%.8f&maxX=%.8f&maxY=%.8f",
+	address := fmt.Sprintf("%s/fgb/collection?userId=2&minX=%.8f&minY=%.8f&maxX=%.8f&maxY=%.8f&zoom=12",
 		base, bounds.minLon, bounds.minLat, bounds.maxLon, bounds.maxLat)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	status := 0
