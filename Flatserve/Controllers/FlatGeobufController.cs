@@ -48,7 +48,7 @@ public class FlatGeobufController(
 
         using var body = new BufferedStream(
             Response.BodyWriter.AsStream(leaveOpen: true),
-            bufferSize: 32 * 1024);
+            bufferSize: 256 * 1024);
 
         if (layerId is not null)
         {
