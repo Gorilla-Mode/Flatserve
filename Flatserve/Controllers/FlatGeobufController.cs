@@ -46,9 +46,7 @@ public class FlatGeobufController(
         if (bodyControl is not null)
             bodyControl.AllowSynchronousIO = true;
 
-        using var body = new BufferedStream(
-            Response.BodyWriter.AsStream(leaveOpen: true),
-            bufferSize: 256 * 1024);
+        using var body = new BodyWriterStream(Response.BodyWriter);
 
         if (layerId is not null)
         {
@@ -56,6 +54,8 @@ public class FlatGeobufController(
             Response.ContentType = "application/vnd.fgb";
             Response.Headers["X-Flatserve-Lod"] = level.ToString();
             write(dataset, body);
+            
+            body.Flush();
             return new EmptyResult();
         }
 
@@ -84,6 +84,7 @@ public class FlatGeobufController(
         }
 
         WriteAscii($"--{boundary}--\r\n");
+        body.Flush();
         return new EmptyResult();
     }
     
